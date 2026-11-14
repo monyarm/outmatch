@@ -138,7 +138,7 @@ def _unit_text(fn: dict) -> str:
 
 def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: float = 900.0,
           jobs: int = common.JOBS, count: int = 64, seed: int = 0, submit_match: bool = True,
-          again: bool = False, say=print) -> dict:
+          again: bool = False, apply_best: bool = False, say=print) -> dict:
     """Run the requested phases on one function, best-first, and record each in the ledger."""
     symbol, unit = fn["name"], fn["unit"]
     text = _unit_text(fn)
@@ -159,13 +159,13 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
         try:
             if name == "levers":
                 from . import levers
-                out = levers.apply(symbol, jobs=jobs, submit_match=submit_match)
+                out = levers.apply(symbol, jobs=jobs, submit_match=submit_match, apply_best=apply_best)
             elif name == "pragma":
                 from . import pragma
-                out = pragma.sweep(fn, jobs=jobs, submit_match=submit_match)
+                out = pragma.sweep(fn, jobs=jobs, submit_match=submit_match, apply_best=apply_best)
             elif name == "permuter":
                 got = search.search(fn, seconds=max(5.0, left), jobs=jobs, count=count, seed=seed,
-                                    submit_match=submit_match, say=say)
+                                    submit_match=submit_match, say=say, apply_best=apply_best)
                 out = {"best_pct": got.best_pct, "matched": got.matched, "submitted": got.submitted,
                        "note": got.note}
             elif name == "flags":
@@ -203,7 +203,7 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
         result["best_pct"] = max(result["best_pct"], pct)
         result["matched"] = result["matched"] or matched
         say(json.dumps({**row, "pct": round(pct, 3), "tries": out.get("tries"),
-                        "variants": out.get("variants"),
+                        "variants": out.get("variants"), "applied": bool(out.get("won")),
                         "seconds": round(time.monotonic() - started, 1)}))
         if matched:
             break
@@ -216,7 +216,8 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
 
 def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: int, count: int, seed: int,
          submit_match: bool, again: bool, forever: bool, idle: float, phases: tuple[str, ...],
-         any_permuted: bool = False, min_pct: float = 0.0, order: str = "fresh", say=print) -> dict:
+         any_permuted: bool = False, min_pct: float = 0.0, order: str = "fresh", apply_best: bool = False,
+         say=print) -> dict:
     ledger = Ledger()
     total = {"visited": 0, "matched": 0, "phases": 0}
     try:
@@ -234,7 +235,7 @@ def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: i
                                 "insns": fn["n_insns"], "pct": round(pct_of(fn), 3),
                                 "visits": ledger.summary(fn["name"]).get("visits", 0)}))
                 res = visit(fn, ledger, phases=phases, seconds=seconds, jobs=jobs, count=count, seed=seed,
-                            submit_match=submit_match, again=again, say=say)
+                            submit_match=submit_match, again=again, apply_best=apply_best, say=say)
                 total["visited"] += 1
                 total["matched"] += int(res["matched"])
                 total["phases"] += len([p for p in res["phases"] if "skipped" not in p and "error" not in p])

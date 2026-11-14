@@ -60,7 +60,8 @@ def carriers(definition: str) -> list[tuple[str, str, str]]:
     return out
 
 
-def sweep(fn: dict, seconds: float = 120, jobs: int = common.JOBS, submit_match: bool = True) -> dict:
+def sweep(fn: dict, seconds: float = 120, jobs: int = common.JOBS, submit_match: bool = True,
+          apply_best: bool = False) -> dict:
     """Every carrier against one function; returns the summary `search.judge` printed."""
     text = common.source_path(fn["unit"]).read_text(encoding="utf-8")
     own, start, end = search.csource.find(text, [], fn["name"])
@@ -68,4 +69,4 @@ def sweep(fn: dict, seconds: float = 120, jobs: int = common.JOBS, submit_match:
         return {"symbol": fn["name"], "note": "no definition", "matched": False}
     definition = text[start:end]
     variants = carriers(definition)
-    return search.judge(fn, variants, jobs=jobs, submit_match=submit_match)
+    return search.judge(fn, variants, jobs=jobs, submit_match=submit_match, apply_best=apply_best)

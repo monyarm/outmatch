@@ -214,10 +214,12 @@ def variants(definition: str, only: str = "") -> list[tuple[str, str, str]]:
     return out
 
 
-def apply(name: str, only: str = "", jobs: int = common.JOBS, submit_match: bool = True) -> dict:
+def apply(name: str, only: str = "", jobs: int = common.JOBS, submit_match: bool = True,
+          apply_best: bool = False) -> dict:
     fn = {"name": name, "unit": common.unit_of(name)}
     text = common.source_path(fn["unit"]).read_text(encoding="utf-8")
     own, start, end = search.csource.find(text, [], name)
     if start < 0:
         return {"symbol": name, "note": "no definition", "matched": False}
-    return search.judge(fn, variants(text[start:end], only), jobs=jobs, submit_match=submit_match)
+    return search.judge(fn, variants(text[start:end], only), jobs=jobs, submit_match=submit_match,
+                        apply_best=apply_best)

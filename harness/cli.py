@@ -128,7 +128,8 @@ def cmd_loop(args) -> int:
     out = loopmode.loop(max_score=args.max_ratio, unit=args.unit, limit=args.limit or 0, seconds=args.seconds,
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
                         again=args.again, forever=args.forever, idle=args.idle, phases=phases,
-                        any_permuted=args.any, min_pct=args.min_pct, order=args.order)
+                        any_permuted=args.any, min_pct=args.min_pct, order=args.order,
+                        apply_best=args.apply_improvements)
     _say({**out, "queued": len(todo)})
     return 0
 
@@ -216,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--forever", action="store_true", help="keep waiting for new candidates instead of stopping")
     lp.add_argument("--idle", type=float, default=300, help="seconds to sleep when --forever finds nothing")
     lp.add_argument("--no-submit", action="store_true")
+    lp.add_argument("--apply-improvements", action="store_true",
+                    help="also submit a candidate that beats the app's best but is not 100 yet")
     lp.add_argument("--dry-run", action="store_true", help="print the queue and exit")
     lp.set_defaults(func=cmd_loop)
 

@@ -75,6 +75,12 @@ applies a set only when it makes the function 100 without knocking any matched f
 that would need a split is reported, never applied: run `flags --apply SYMBOL` for that. Every phase that reaches 100
 submits the definition through `POST /api/try` immediately, so the app records and commits the match.
 
+`--apply-improvements` also submits a phase's best draft when it is **not** 100 but beats the app's current best
+(its `best_score` from the database). That is the only way a sub-100 draft reaches `src/`: the app re-judges it,
+keeps it as `best_source` and updates `best_score`, so the GUI and the app's own permuter start from it. Equal or
+worse drafts stay in `.outmatch/best/` and the ledger; each submitted improvement takes the `you` claim until the app
+releases it, so run it when the agents are not competing for the same functions.
+
 The ledger is append-only JSONL, one row per visit and per phase run, with the source hash of the unit at the time.
 That is what makes runs resumable and cheap: the next run picks the least-visited functions first (then worst
 relative score), and a phase whose source hash has not changed is skipped. When an agent or you edit the unit, the

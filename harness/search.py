@@ -191,8 +191,14 @@ class Outcome:
     note: str = ""
 
 
+def db_best_pct(fn: dict) -> float:
+    """The app's current best for a function, as objdiff percentage (score is out of n_insns * 100)."""
+    return 100.0 - 100.0 * float(fn.get("score") or 0) / (100.0 * max(int(fn.get("n_insns") or 1), 1))
+
+
 def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int = 64,
-           seed: int = 0, submit_match: bool = True, write_best: bool = True, say=None) -> Outcome:
+           seed: int = 0, submit_match: bool = True, write_best: bool = True, say=None,
+           apply_best: bool = False) -> Outcome:
     """One function: hill-climb decomp-permuter variants against the delinked original."""
     symbol, unit = fn["name"], fn["unit"]
     started = time.monotonic()
@@ -213,7 +219,19 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
         first = pool.score(source_with(text, symbol, current), symbol)
         if first.pct < 0:
             return Outcome(symbol, -1, current, note=f"the current C doesn't compile: {first.compile_error}")
-        best_pct, best_src = first.pct, current
+        if first.pct >= 100:
+            # the tree already compiles to 100 (an edit the app hasn't measured yet): record it
+            out.best_pct, out.best_source, out.matched = 100.0, current, True
+            if submit_match:
+                helpers, definition = csource.split_extra(current)
+                try:
+                    out.submitted = submit(symbol, definition, helpers)
+                    out.matched = bool(out.submitted.get("matched"))
+                except common.OutmatchError as e:
+                    out.note = str(e)[:300]
+            out.seconds = time.monotonic() - started
+            return out
+        best_pct, best_src, best_helpers = first.pct, current, ""
         if say:
             say({"phase": "permuter", "baseline": round(best_pct, 3), "seconds": round(seconds, 1)})
         start_src = current
@@ -239,7 +257,7 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
                     [source_with(text, symbol, d, h) for d, h in todo], symbol)):
                 out.tries += 1
                 if verdict.pct > best_pct:
-                    best_pct, best_src = verdict.pct, definition
+                    best_pct, best_src, best_helpers = verdict.pct, definition, helpers
                     out.best_source = definition
                     out.best_pct = best_pct
                     common.log("improved", symbol=symbol, pct=round(best_pct, 3), unit=unit)
@@ -264,6 +282,11 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
                 break
         out.best_pct = best_pct
         out.seconds = time.monotonic() - started
+        if apply_best and not out.matched and best_pct < 100 and best_pct > db_best_pct(fn) + 1e-6:
+            try:
+                out.won = submit(symbol, best_src, best_helpers)
+            except common.OutmatchError as e:
+                out.note = str(e)[:300]
         out.note = out.note or f"{out.tries} variants, {pool.compiles} compiles"
     finally:
         gen.close()
@@ -274,7 +297,7 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
 
 
 def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOBS,
-          submit_match: bool = True, write_best: bool = True) -> dict:
+          submit_match: bool = True, write_best: bool = True, apply_best: bool = False) -> dict:
     """Score `(label, definition, helpers)` variants against the delinked original; submit the first exact match.
 
     Used by the pragma/carrier and lever sweeps, which have their own candidate lists and don't need the permuter.
@@ -285,6 +308,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
     if start < 0:
         return {"symbol": symbol, "variants": len(variants), "best_pct": None, "best_label": None,
                 "matched": False, "rows": [], "note": f"no definition in src/auto/{unit}.cpp"}
+    best_def, best_helpers = "", ""
     out: dict = {"symbol": symbol, "unit": unit, "variants": len(variants), "best_pct": None, "best_label": None,
                  "matched": False, "rows": [], "submitted": {}, "note": ""}
     pool = Pool(unit, jobs)
@@ -292,6 +316,17 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
         current = text[start:end]
         base = pool.score(source_with(text, symbol, current), symbol)
         out["best_pct"], out["best_label"] = round(base.pct, 3), "current"
+        if base.pct >= 100:
+            # the tree already compiles to 100 (an edit the app hasn't measured yet): record it
+            out["matched"], out["best_pct"] = True, 100.0
+            if submit_match:
+                helpers, definition = csource.split_extra(current)
+                try:
+                    out["submitted"] = submit(symbol, definition, helpers)
+                    out["matched"] = bool(out["submitted"].get("matched"))
+                except common.OutmatchError as e:
+                    out["note"] = str(e)[:300]
+            return out
         sources = [source_with(text, symbol, d, h) for _, d, h in variants]
         for (label, definition, helpers), verdict in zip(variants, pool.many(sources, symbol)):
             row = {"label": label, "pct": round(verdict.pct, 3)}
@@ -300,6 +335,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
             out["rows"].append(row)
             if verdict.pct > float(out["best_pct"]):
                 out["best_pct"], out["best_label"] = round(verdict.pct, 3), label
+                best_def, best_helpers = definition, helpers
                 if write_best and verdict.pct < 100:
                     save_best(symbol, definition, helpers)
             if verdict.matched:
@@ -312,6 +348,11 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
                         out["note"] = str(e)[:300]
                 break
         out["compiles"] = pool.compiles
+        if apply_best and not out["matched"] and out["best_pct"] > db_best_pct(fn) + 1e-6:
+            try:
+                out["won"] = submit(symbol, best_def, best_helpers)
+            except common.OutmatchError as e:
+                out["note"] = str(e)[:300]
     finally:
         pool.close()
     common.log("judge", symbol=symbol, best=out["best_pct"], label=out["best_label"], matched=out["matched"],
