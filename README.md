@@ -33,7 +33,7 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 | --- | --- |
 | `search NAME [--seconds 120] [--jobs 4] [--count 64] [--seed N] [--no-submit]` | hill-climb decomp-permuter variants for one function; submits the first exact match |
 | `run [--max-ratio 0.06] [--limit 20] [--seconds 30] [--any] [--stop-on-match] [--no-submit]` | the same over the near-miss queue, worst-first; skips claimed functions. `--any` includes functions the app has not permuted 4 times |
-| `loop [--max-ratio 0.06] [--min-pct 0] [--order fresh\|closest] [--limit 0] [--seconds 900] [--phases levers,pragma,permuter,flags] [--unit U] [--again] [--forever] [--dry-run]` | works the queue with **no function named**: for each candidate it runs the phases in order, keeps the ones that help, submits a 100, and records what it tried in `.outmatch/ledger.jsonl`. `--min-pct 99.5` restricts the queue to the closest drafts (`--order closest` sorts by percentage instead of least-visited). Visits rotate, so a second run continues where the first stopped; a phase already run on unchanged source is skipped unless `--again`. `--dry-run` prints the queue; `--forever` waits for new candidates |
+| `loop [--max-ratio 0.06] [--min-pct 0] [--order fresh\|closest] [--limit 0] [--seconds 900] [--phases levers,pragma,permuter] [--unit U] [--again] [--forever] [--dry-run]` | works the queue with **no function named**: for each candidate it runs the phases in order, keeps the ones that help, submits a 100, and records what it tried in `.outmatch/ledger.jsonl`. `--min-pct 99.5` restricts the queue to the closest drafts (`--order closest` sorts by percentage instead of least-visited). Visits rotate, so a second run continues where the first stopped; a phase already run on unchanged source is skipped unless `--again`. `--dry-run` prints the queue; `--forever` waits for new candidates |
 | `report [SYMBOL]` | the loop's ledger: functions, visits, matches and per-phase runs, or one function's whole history |
 | `flags [--unit U \| --all] [--apply SYMBOL]` | sweep optimisation levels and codegen flags for a whole unit, scored per function. `--apply` keeps a clean set in `file_flags.json`, or splits the function into its own unit when the set regresses its unit mates |
 | `pragma NAME` | `#pragma optimize/inline_depth/auto_inline` wrappers plus forward/extern/typedef declaration-run state carriers around the definition |
@@ -50,11 +50,11 @@ are saved as C files under `.outmatch/best/` and are never written into `src/` u
 ```
 tools/outmatch/outmatch.sh loop --dry-run --limit 10     # what would be next
 tools/outmatch/outmatch.sh loop --dry-run --min-pct 99.9 --order closest  # the closest drafts first
-tools/outmatch/outmatch.sh loop --limit 5 --seconds 600  # levers, pragmas, permuter, flags per function
+tools/outmatch/outmatch.sh loop --limit 5 --seconds 600  # levers, pragmas, permuter per function
 tools/outmatch/outmatch.sh report                        # what it has tried so far
 ```
 
-The phases are `levers`, `pragma`, `permuter` and `flags` (drop any with `--phases`, or use `all`). The `flags` phase
+The phases are `levers`, `pragma` and `permuter` (add any with `--phases`; `all` adds `flags`). The optional `flags` phase
 sweeps the function's unit once per unit + source + current flags (about 3 s, cached under `.outmatch/flags/`) and
 applies a set only when it makes the function 100 without knocking any matched function in the unit off 100. A set
 that would need a split is reported, never applied: run `flags --apply SYMBOL` for that. Every phase that reaches 100
