@@ -153,7 +153,9 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
         left = seconds - (time.monotonic() - started)
         if left <= 0:
             result["phases"].append({"phase": name, "skipped": "budget spent"})
+            say(json.dumps({"symbol": symbol, "phase": name, "skipped": "budget spent"}))
             continue
+        say(json.dumps({"symbol": symbol, "phase": name, "start": True, "budget": round(left, 1)}))
         try:
             if name == "levers":
                 from . import levers
@@ -163,7 +165,7 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
                 out = pragma.sweep(fn, jobs=jobs, submit_match=submit_match)
             elif name == "permuter":
                 got = search.search(fn, seconds=max(5.0, left), jobs=jobs, count=count, seed=seed,
-                                    submit_match=submit_match)
+                                    submit_match=submit_match, say=say)
                 out = {"best_pct": got.best_pct, "matched": got.matched, "submitted": got.submitted,
                        "note": got.note}
             elif name == "flags":
@@ -200,7 +202,9 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
                                  "submitted": bool(out.get("submitted"))})
         result["best_pct"] = max(result["best_pct"], pct)
         result["matched"] = result["matched"] or matched
-        say(json.dumps({"symbol": symbol, "unit": unit, "phase": name, "pct": round(pct, 3), "matched": matched}))
+        say(json.dumps({**row, "pct": round(pct, 3), "tries": out.get("tries"),
+                        "variants": out.get("variants"),
+                        "seconds": round(time.monotonic() - started, 1)}))
         if matched:
             break
     result["seconds"] = round(time.monotonic() - started, 1)
@@ -226,6 +230,9 @@ def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: i
                 time.sleep(idle)
                 continue
             for fn in todo:
+                say(json.dumps({"symbol": fn["name"], "unit": fn["unit"], "score": fn["score"],
+                                "insns": fn["n_insns"], "pct": round(pct_of(fn), 3),
+                                "visits": ledger.summary(fn["name"]).get("visits", 0)}))
                 res = visit(fn, ledger, phases=phases, seconds=seconds, jobs=jobs, count=count, seed=seed,
                             submit_match=submit_match, again=again, say=say)
                 total["visited"] += 1

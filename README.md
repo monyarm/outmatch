@@ -56,6 +56,19 @@ tools/outmatch/outmatch.sh loop --limit 5 --seconds 600  # levers, pragmas, perm
 tools/outmatch/outmatch.sh report                        # what it has tried so far
 ```
 
+Each function is announced with its score and percentage, each phase prints a `start` line with its remaining budget,
+and each phase result carries the percentage, variant count and elapsed seconds, e.g.
+
+```
+{"symbol": "@func_0043B414@4", "unit": "text_0043B124", "score": 2, "insns": 54, "pct": 99.963, "visits": 0}
+{"symbol": "@func_0043B414@4", "phase": "pragma", "start": true, "budget": 894.2}
+{"symbol": "@func_0043B414@4", "phase": "pragma", "pct": 99.965, "variants": 39, "seconds": 4.1}
+```
+
+`--seconds` is the budget for **one function** (default **900**), not for the run: `levers` and `pragma` finish in
+seconds, the permuter gets the rest, so a single function can be worked for up to 15 minutes by default. Lower it
+(e.g. `--seconds 120`) for a quick pass, or use `--phases levers,pragma` when the permuter has already stalled.
+
 The phases are `levers`, `pragma` and `permuter` (add any with `--phases`; `all` adds `flags`). The optional `flags` phase
 sweeps the function's unit once per unit + source + current flags (about 3 s, cached under `.outmatch/flags/`) and
 applies a set only when it makes the function 100 without knocking any matched function in the unit off 100. A set

@@ -192,7 +192,7 @@ class Outcome:
 
 
 def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int = 64,
-           seed: int = 0, submit_match: bool = True, write_best: bool = True) -> Outcome:
+           seed: int = 0, submit_match: bool = True, write_best: bool = True, say=None) -> Outcome:
     """One function: hill-climb decomp-permuter variants against the delinked original."""
     symbol, unit = fn["name"], fn["unit"]
     started = time.monotonic()
@@ -214,6 +214,8 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
         if first.pct < 0:
             return Outcome(symbol, -1, current, note=f"the current C doesn't compile: {first.compile_error}")
         best_pct, best_src = first.pct, current
+        if say:
+            say({"phase": "permuter", "baseline": round(best_pct, 3), "seconds": round(seconds, 1)})
         start_src = current
         rng_seed = seed or (fn["id"] * 1000003 + int(time.time())) % MAX_SEED
         batch_no = 0
@@ -255,6 +257,9 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
                         break
             if out.matched:
                 break
+            if say:
+                say({"phase": "permuter", "batch": batch_no, "tries": out.tries,
+                     "best": round(best_pct, 3), "elapsed": round(time.monotonic() - started, 1)})
             if time.monotonic() >= deadline:
                 break
         out.best_pct = best_pct
