@@ -175,6 +175,13 @@ def submit(symbol: str, definition: str, helpers: str = "") -> dict:
         if helpers.strip() not in text[:start]:
             path.write_text(text[:start] + helpers.rstrip() + "\n\n" + text[start:], encoding="utf-8")
     res = common.try_function(symbol, definition)
+    if not res.get("matched"):
+        # a non-match leaves the claim the app gave "you" in place until it expires, and the UI shows the function
+        # as being worked on: give it back
+        try:
+            common.api("/api/release", {"slug": common.SLUG, "name": symbol})
+        except common.OutmatchError:
+            pass
     common.log("submitted", symbol=symbol, matched=bool(res.get("matched")), score=res.get("score"))
     return res
 
