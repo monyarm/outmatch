@@ -39,6 +39,8 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 | `pragma NAME` | `#pragma optimize/inline_depth/auto_inline` wrappers plus forward/extern/typedef declaration-run state carriers around the definition |
 | `levers NAME [--only id,id]` | mechanical CMR2Decomp/brickpark source idioms (`if-else-swap`, `ternary-to-if`, `and-or-swap`, `compound-split`, `assign-to-compound`, `postinc`, `chain-assign`, `decl-hoist`) |
 | `submit NAME FILE` | send a saved variant (e.g. from `.outmatch/best/`) through `/api/try` |
+| `libmatch [--libs DIR] [--write] [--range-from HEX]` | match the project's functions against the VC6 static libraries' own objects (masked-relocation signatures), then `--write` records them in `set_aside.json` with the library, object and symbol as the reason, and adds their names |
+
 | `status` | DB status counts plus the app's `/api/state` |
 | `release NAME` | give a claim back |
 
@@ -100,6 +102,32 @@ letters MSVC 6 knows, `#pragma inline_depth`, `#pragma inline_recursion`, `#prag
 `struct`/`extern int`/`typedef` declarations of 1–32 lines before the definition. All of these are exactly what the
 app accepts beside a definition (`#pragma` lines and one-line declarations), so a winner goes in through `/api/try`
 unchanged.
+
+## Libraries already in the binary (`libmatch`)
+
+The game links the C/C++ runtime statically (`/MT`: no `msvcr*.dll` import, `.tls` present), so a few hundred
+functions in `orig/casefile1.exe` are not the game's code at all — they are Microsoft's. `libmatch` finds them by
+compiling nothing: it unpacks the VC6 libraries' `.obj` members, extracts every function (they are built `/Gy`, one
+section per function), and compares a signature of `(size, bytes with relocation fields zeroed, relocation
+offsets/types)` against every function in `build/casefile1/target/*.obj`. The delivered image was linked with the
+same library build, so a signature match is byte identity in everything the linker did not fill in.
+
+- Only signatures unique in the library are accepted, and a signature shared by two project functions is rejected:
+  compiler-generated bodies (`??_G...` scalar-deleting destructors, tiny stubs) coincide across unrelated code. The
+  scan reports those under `ambiguous` rather than guessing.
+- `--write` adds a `set_aside.json` entry per proven function naming the evidence, e.g.
+  `"@func_00451E2B@12": "MSVC 6.0 static runtime — LIBCMT.LIB (stdexcpt.obj): ??0exception@@QAE@ABQBD@Z"`, plus one
+  `ranges` entry for the whole CRT tail (`0x44E690-0x4595C6`), because the rest of that block is the same library
+  compiled by a slightly different build and does not always match byte for byte. It also fills in the function names
+  the library gives (`_onexit`, `_nh_malloc`, `RtlUnwind`, …) in `functions.json`'s `names`.
+- Set-aside functions leave the progress denominator (`matched / (total - set aside)`) and are marked not-C; the
+  rebuild already takes their bytes from your copy of the game, so nothing about the built program changes.
+
+The libraries are not committed (43 MB, and Microsoft's): take `vc_studio/main/VC98/Lib` from the archive.org item
+`visual-studio-6-0-sp5-portable` ("Visual Studio 6.0 SP5+PP5 portable") and point `--libs` at it (default
+`/tmp/opencode/vs60/vc_studio/main/VC98/Lib`). This project's original compiler is cl 12.00.8943 (VC6 Processor
+Pack, from the PE's Rich header); the archive's library build is 12.00.9044, which is why the big formatting/startup
+routines match exactly but the `_malloc` family and `mainCRTStartup` do not.
 
 ## Skills
 
