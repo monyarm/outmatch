@@ -1,0 +1,323 @@
+"""The external permuter: decomp-permuter variants, compiled and scored in parallel scratch trees.
+
+Nothing here touches the project tree: candidates are compiled in per-worker copies and compared with the delinked
+target object.  Only a candidate that scores a full 100 can be submitted, through the app's own `/api/try`.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import queue
+import subprocess
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from . import common, csource
+
+MAX_SEED = 2**31
+
+
+class Generator:
+    """The app's permuter generator, in its own environment, kept up for a whole search."""
+
+    def __init__(self) -> None:
+        env = dict(os.environ)
+        env["OUTMATCH_ROOT"] = str(common.ROOT)
+        self.proc = subprocess.Popen([common.app_python(), "-m", "harness.permuter_worker"],
+                                     cwd=common.ROOT / "tools" / "outmatch", stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1)
+
+    def call(self, job: dict, timeout: float = 60) -> dict:
+        try:
+            self.proc.stdin.write(json.dumps(job) + "\n")
+            self.proc.stdin.flush()
+        except OSError:
+            return {"error": "generator stopped"}
+        result: list[str] = []
+        done = threading.Event()
+
+        def read() -> None:
+            line = self.proc.stdout.readline()
+            if line:
+                result.append(line)
+            done.set()
+
+        threading.Thread(target=read, daemon=True).start()
+        if not done.wait(timeout):
+            self.close()
+            return {"error": "generator hung"}
+        if not result:
+            return {"error": "generator stopped"}
+        try:
+            return json.loads(result[0])
+        except ValueError:
+            return {"error": "generator said something unreadable"}
+
+    def prepare(self, unit: str, symbol: str) -> dict:
+        return self.call({"op": "prepare", "unit": unit, "symbol": symbol})
+
+    def variants(self, header: str, source: str, function: str, seed: int, count: int = 64) -> list[str] | None:
+        out = self.call({"op": "variants", "header": header, "source": source, "function": function,
+                         "seed": seed, "count": count}, timeout=90)
+        if out.get("error"):
+            return None
+        return out.get("variants") or []
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+
+@dataclass
+class Verdict:
+    source: str
+    pct: float          # 100 = exact
+    compile_error: str = ""
+    helpers: str = ""   # declarations the variant wrote beside the function
+
+    @property
+    def matched(self) -> bool:
+        return self.pct >= 100.0
+
+
+class Pool:
+    """N scratch trees, each compiling one candidate at a time (compiling is the slow part: ~0.3 s)."""
+
+    def __init__(self, unit: str, jobs: int = common.JOBS) -> None:
+        self.unit = unit
+        self.jobs = max(1, jobs)
+        self.roots = [common.make_scratch(unit, i) for i in range(self.jobs)]
+        self.free: queue.Queue[Path] = queue.Queue()
+        for root in self.roots:
+            self.free.put(root)
+        self.cache_dir = common.STATE / "cache" / unit
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._executor = ThreadPoolExecutor(max_workers=self.jobs)
+        self._lock = threading.Lock()
+        self.compiles = 0
+        self.failures = 0
+
+    def _key(self, source: str, flags: list[str] | None, extra: list[str] | None) -> str:
+        h = hashlib.sha256(source.encode("utf-8", "replace"))
+        h.update(json.dumps([flags, extra, self.unit]).encode())
+        return h.hexdigest()[:32]
+
+    def score(self, source: str, symbol: str, flags: list[str] | None = None,
+              extra: list[str] | None = None) -> Verdict:
+        key = self._key(source, flags, extra)
+        cached = self.cache_dir / f"{key}.json"
+        if cached.is_file():
+            data = json.loads(cached.read_text())
+            return Verdict(source, float(data["pct"]), data.get("error", ""), "")
+        root = self.free.get()
+        try:
+            out_rel = f"build/{common.VERSION}/src/auto/{self.unit}.obj"
+            err = ""
+            try:
+                obj = common.scratch_compile(root, self.unit, source, out_rel, flags, extra)
+            except common.OutmatchError as e:
+                err, pct = str(e), -1.0
+                self.failures += 1
+            else:
+                pct = common.score(common.target_obj(self.unit), obj, symbol)
+            self.compiles += 1
+            verdict = Verdict(source, pct, err[-400:])
+            tmp = cached.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"pct": pct, "error": verdict.compile_error}))
+            tmp.replace(cached)
+            return verdict
+        finally:
+            self.free.put(root)
+
+    def many(self, candidates: list[str], symbol: str, flags: list[str] | None = None,
+             extra: list[str] | None = None):
+        """Scores as they finish (best-first is the caller's job)."""
+        futures = [self._executor.submit(self.score, c, symbol, flags, extra) for c in candidates]
+        for f in futures:
+            yield f.result()
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=True)
+
+
+def source_with(unit_text: str, symbol: str, definition: str, helpers: str = "") -> str:
+    """The unit's source with `definition` in place of the function (helpers beside it)."""
+    own, start, end = csource.find(unit_text, [], symbol)
+    if start < 0:
+        raise KeyError(symbol)
+    if helpers:
+        helpers = helpers.rstrip() + "\n\n"
+    return unit_text[:start] + helpers + definition.rstrip() + "\n" + unit_text[end:]
+
+
+def submit(symbol: str, definition: str, helpers: str = "") -> dict:
+    """Ask the app to judge (and, on a match, write+commit+record) one function.  Returns its answer."""
+    unit = common.unit_of(symbol)
+    if helpers:
+        # the app only accepts one definition through /api/try: put the variant's helpers into the file first
+        path = common.source_path(unit)
+        text = path.read_text(encoding="utf-8")
+        own, start, end = csource.find(text, [], symbol)
+        if start < 0:
+            raise common.OutmatchError(f"{symbol}: definition vanished from {path}")
+        if helpers.strip() not in text[:start]:
+            path.write_text(text[:start] + helpers.rstrip() + "\n\n" + text[start:], encoding="utf-8")
+    res = common.try_function(symbol, definition)
+    common.log("submitted", symbol=symbol, matched=bool(res.get("matched")), score=res.get("score"))
+    return res
+
+
+@dataclass
+class Outcome:
+    symbol: str
+    best_pct: float
+    best_source: str
+    matched: bool = False
+    submitted: dict = field(default_factory=dict)
+    tries: int = 0
+    seconds: float = 0.0
+    note: str = ""
+
+
+def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int = 64,
+           seed: int = 0, submit_match: bool = True, write_best: bool = True) -> Outcome:
+    """One function: hill-climb decomp-permuter variants against the delinked original."""
+    symbol, unit = fn["name"], fn["unit"]
+    started = time.monotonic()
+    deadline = started + seconds
+    text = common.source_path(unit).read_text(encoding="utf-8")
+    own, start, end = csource.find(text, [], symbol)
+    if start < 0:
+        return Outcome(symbol, -1, "", note=f"no definition in src/auto/{unit}.cpp")
+    current = text[start:end]
+    pool = Pool(unit, jobs)
+    gen = Generator()
+    out = Outcome(symbol, -1.0, current)
+    try:
+        prep = gen.prepare(unit, symbol)
+        if prep.get("error"):
+            return Outcome(symbol, -1, current, note=f"header: {prep['error']}")
+        header, name = prep["header"], prep["name"]
+        first = pool.score(source_with(text, symbol, current), symbol)
+        if first.pct < 0:
+            return Outcome(symbol, -1, current, note=f"the current C doesn't compile: {first.compile_error}")
+        best_pct, best_src = first.pct, current
+        start_src = current
+        rng_seed = seed or (fn["id"] * 1000003 + int(time.time())) % MAX_SEED
+        batch_no = 0
+        while time.monotonic() < deadline and best_pct < 100:
+            base = best_src if batch_no % 2 else start_src
+            batch_no += 1
+            variants = gen.variants(header, base, name, (rng_seed + batch_no * 7919) % MAX_SEED, count)
+            if variants is None:
+                out.note = "decomp-permuter can't read this C"
+                break
+            if not variants:
+                out.note = "no more variants"
+                break
+            todo = []
+            for cand in variants:
+                helpers, definition = csource.split_extra(cand)
+                todo.append((definition, helpers))
+            remaining = max(1, int(deadline - time.monotonic()))
+            # score in parallel; keep the best
+            for (definition, helpers), verdict in zip(todo, pool.many(
+                    [source_with(text, symbol, d, h) for d, h in todo], symbol)):
+                out.tries += 1
+                if verdict.pct > best_pct:
+                    best_pct, best_src = verdict.pct, definition
+                    out.best_source = definition
+                    out.best_pct = best_pct
+                    common.log("improved", symbol=symbol, pct=round(best_pct, 3), unit=unit)
+                    if write_best and best_pct < 100:
+                        save_best(symbol, definition, helpers)
+                if verdict.matched:
+                    out.matched, out.best_pct = True, 100.0
+                    if submit_match:
+                        try:
+                            out.submitted = submit(symbol, definition, helpers)
+                            out.matched = bool(out.submitted.get("matched"))
+                        except common.OutmatchError as e:
+                            out.note = str(e)[:300]
+                    if out.matched:
+                        break
+            if out.matched:
+                break
+            if time.monotonic() >= deadline:
+                break
+        out.best_pct = best_pct
+        out.seconds = time.monotonic() - started
+        out.note = out.note or f"{out.tries} variants, {pool.compiles} compiles"
+    finally:
+        gen.close()
+        pool.close()
+    common.log("search", symbol=symbol, pct=round(out.best_pct, 3), matched=out.matched,
+               tries=out.tries, seconds=round(out.seconds, 1))
+    return out
+
+
+def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOBS,
+          submit_match: bool = True, write_best: bool = True) -> dict:
+    """Score `(label, definition, helpers)` variants against the delinked original; submit the first exact match.
+
+    Used by the pragma/carrier and lever sweeps, which have their own candidate lists and don't need the permuter.
+    """
+    symbol, unit = fn["name"], fn["unit"]
+    text = common.source_path(unit).read_text(encoding="utf-8")
+    own, start, end = csource.find(text, [], symbol)
+    if start < 0:
+        return {"symbol": symbol, "variants": len(variants), "best_pct": None, "best_label": None,
+                "matched": False, "rows": [], "note": f"no definition in src/auto/{unit}.cpp"}
+    out: dict = {"symbol": symbol, "unit": unit, "variants": len(variants), "best_pct": None, "best_label": None,
+                 "matched": False, "rows": [], "submitted": {}, "note": ""}
+    pool = Pool(unit, jobs)
+    try:
+        current = text[start:end]
+        base = pool.score(source_with(text, symbol, current), symbol)
+        out["best_pct"], out["best_label"] = round(base.pct, 3), "current"
+        sources = [source_with(text, symbol, d, h) for _, d, h in variants]
+        for (label, definition, helpers), verdict in zip(variants, pool.many(sources, symbol)):
+            row = {"label": label, "pct": round(verdict.pct, 3)}
+            if verdict.compile_error:
+                row["error"] = verdict.compile_error[:160]
+            out["rows"].append(row)
+            if verdict.pct > float(out["best_pct"]):
+                out["best_pct"], out["best_label"] = round(verdict.pct, 3), label
+                if write_best and verdict.pct < 100:
+                    save_best(symbol, definition, helpers)
+            if verdict.matched:
+                out["matched"], out["best_pct"] = True, 100.0
+                if submit_match:
+                    try:
+                        out["submitted"] = submit(symbol, definition, helpers)
+                        out["matched"] = bool(out["submitted"].get("matched"))
+                    except common.OutmatchError as e:
+                        out["note"] = str(e)[:300]
+                break
+        out["compiles"] = pool.compiles
+    finally:
+        pool.close()
+    common.log("judge", symbol=symbol, best=out["best_pct"], label=out["best_label"], matched=out["matched"],
+               variants=out["variants"])
+    return out
+
+
+def save_best(symbol: str, definition: str, helpers: str = "") -> Path:
+    d = common.STATE / "best"
+    d.mkdir(parents=True, exist_ok=True)
+    name = symbol.replace("@", "_").replace("?", "m").replace(":", "_")
+    path = d / f"{name}.c"
+    path.write_text((helpers.rstrip() + "\n\n" if helpers else "") + definition, encoding="utf-8")
+    return path
