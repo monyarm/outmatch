@@ -33,6 +33,8 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 | --- | --- |
 | `search NAME [--seconds 120] [--jobs 4] [--count 64] [--seed N] [--no-submit]` | hill-climb decomp-permuter variants for one function; submits the first exact match |
 | `run [--max-ratio 0.06] [--limit 20] [--seconds 30] [--any] [--stop-on-match] [--no-submit]` | the same over the near-miss queue, worst-first; skips claimed functions. `--any` includes functions the app has not permuted 4 times |
+| `loop [--max-ratio 0.06] [--limit 0] [--seconds 900] [--phases levers,pragma,permuter] [--unit U] [--again] [--forever] [--dry-run]` | works the queue with **no function named**: for each candidate it runs the phases in order, keeps the ones that help, submits a 100, and records what it tried in `.outmatch/ledger.jsonl`. Visits rotate, so a second run continues where the first stopped; a phase already run on unchanged source is skipped unless `--again`. `--dry-run` prints the queue; `--forever` waits for new candidates |
+| `report [SYMBOL]` | the loop's ledger: functions, visits, matches and per-phase runs, or one function's whole history |
 | `flags [--unit U \| --all] [--apply SYMBOL]` | sweep optimisation levels and codegen flags for a whole unit, scored per function. `--apply` keeps a clean set in `file_flags.json`, or splits the function into its own unit when the set regresses its unit mates |
 | `pragma NAME` | `#pragma optimize/inline_depth/auto_inline` wrappers plus forward/extern/typedef declaration-run state carriers around the definition |
 | `levers NAME [--only id,id]` | mechanical CMR2Decomp/brickpark source idioms (`if-else-swap`, `ternary-to-if`, `and-or-swap`, `compound-split`, `assign-to-compound`, `postinc`, `chain-assign`, `decl-hoist`) |
@@ -42,6 +44,20 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 
 Every command prints one JSON object per event on stdout and appends to `.outmatch/*.jsonl`. Improvements below 100
 are saved as C files under `.outmatch/best/` and are never written into `src/` unless they win.
+
+## Loop mode and its ledger
+
+```
+tools/outmatch/outmatch.sh loop --dry-run --limit 10     # what would be next
+tools/outmatch/outmatch.sh loop --limit 5 --seconds 600  # levers, pragmas, then permuter per function
+tools/outmatch/outmatch.sh report                        # what it has tried so far
+```
+
+The ledger is append-only JSONL, one row per visit and per phase run, with the source hash of the unit at the time.
+That is what makes runs resumable and cheap: the next run picks the least-visited functions first (then worst
+relative score), and a phase whose source hash has not changed is skipped. When an agent or you edit the unit, the
+hash changes and the phases run again against the new baseline. Only one loop should run at a time: it uses the same
+scratch trees as the other commands.
 
 ## How a candidate is judged
 

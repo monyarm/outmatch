@@ -103,6 +103,43 @@ def cmd_levers(args) -> int:
     return 0
 
 
+def cmd_loop(args) -> int:
+    """Work the queue without naming functions: levers, pragmas and the permuter, in that order."""
+    from . import loopmode
+    phases = tuple(p.strip() for p in args.phases.split(",") if p.strip())
+    bad = [p for p in phases if p not in loopmode.PHASES]
+    if bad:
+        raise SystemExit(f"unknown phase(s): {', '.join(bad)} (choose from {', '.join(loopmode.PHASES)})")
+    ledger = loopmode.Ledger()
+    todo = loopmode.candidates(max_score=args.max_ratio, unit=args.unit, limit=args.limit or 0,
+                               any_permuted=args.any, ledger=ledger, phases=phases, again=args.again)
+    if args.dry_run:
+        for fn in todo:
+            s = ledger.summary(fn["name"])
+            _say({"symbol": fn["name"], "unit": fn["unit"], "score": fn["score"], "insns": fn["n_insns"],
+                  "visits": s["visits"], "best_pct": round(s["best_pct"], 3),
+                  "phases": {k: v["n"] for k, v in s["phases"].items()}})
+        _say({"candidates": len(todo)})
+        return 0
+    out = loopmode.loop(max_score=args.max_ratio, unit=args.unit, limit=args.limit or 0, seconds=args.seconds,
+                        jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
+                        again=args.again, forever=args.forever, idle=args.idle, phases=phases,
+                        any_permuted=args.any)
+    _say({**out, "queued": len(todo)})
+    return 0
+
+
+def cmd_report(args) -> int:
+    from . import loopmode
+    ledger = loopmode.Ledger()
+    if args.symbol:
+        _say({"symbol": args.symbol, **ledger.summary(args.symbol),
+              "history": [r for r in ledger.rows if r.get("symbol") == args.symbol][-args.limit:]})
+        return 0
+    _say(ledger.report())
+    return 0
+
+
 def cmd_try(args) -> int:
     """Score one hand-written candidate locally, and (optionally) let the app judge it."""
     from . import csource as cs
@@ -154,6 +191,28 @@ def main(argv: list[str] | None = None) -> int:
     sb.add_argument("name")
     sb.add_argument("file")
     sb.set_defaults(func=cmd_submit)
+
+    lp = sub.add_parser("loop", help="work the near-miss queue with levers, pragmas and the permuter, keeping a ledger")
+    lp.add_argument("--max-ratio", type=float, default=0.06, help="worst relative score to include (0.005 = 0.5%%)")
+    lp.add_argument("--unit", default="", help="only functions of this unit")
+    lp.add_argument("--limit", type=int, default=0, help="functions this run (0 = every candidate)")
+    lp.add_argument("--seconds", type=float, default=900, help="budget per function")
+    lp.add_argument("--phases", default="levers,pragma,permuter")
+    lp.add_argument("--jobs", type=int, default=common.JOBS)
+    lp.add_argument("--count", type=int, default=64, help="permuter variants per batch")
+    lp.add_argument("--seed", type=int, default=0)
+    lp.add_argument("--again", action="store_true", help="rerun phases already tried on this exact source")
+    lp.add_argument("--any", action="store_true", help="include functions the app hasn't permuted 4 times")
+    lp.add_argument("--forever", action="store_true", help="keep waiting for new candidates instead of stopping")
+    lp.add_argument("--idle", type=float, default=300, help="seconds to sleep when --forever finds nothing")
+    lp.add_argument("--no-submit", action="store_true")
+    lp.add_argument("--dry-run", action="store_true", help="print the queue and exit")
+    lp.set_defaults(func=cmd_loop)
+
+    rp = sub.add_parser("report", help="what the loop has tried (summary, or one function's history)")
+    rp.add_argument("symbol", nargs="?", default="")
+    rp.add_argument("--limit", type=int, default=40)
+    rp.set_defaults(func=cmd_report)
 
     tr = sub.add_parser("try", help="score one hand-written definition locally (--submit lets the app judge it)")
     tr.add_argument("name")
