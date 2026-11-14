@@ -15,7 +15,7 @@ from pathlib import Path
 from . import common, search
 
 LEDGER = common.STATE / "ledger.jsonl"
-PHASES = ("levers", "pragma", "permuter")
+PHASES = ("levers", "pragma", "permuter", "flags")
 
 
 def _now() -> float:
@@ -101,10 +101,20 @@ def pending(fn: dict, phases: tuple[str, ...], ledger: Ledger) -> bool:
     return any(not ledger.done(fn["name"], p, src) for p in phases)
 
 
+def pct_of(fn: dict) -> float:
+    """The draft's approximate objdiff percentage: the app's score is hundredths of a percent times the insns."""
+    return 100.0 - 100.0 * (fn.get("score") or 0) / (100.0 * max(fn.get("n_insns") or 1, 1))
+
+
 def candidates(max_score: float | None = 0.06, unit: str = "", limit: int = 0, any_permuted: bool = False,
-               ledger: Ledger | None = None, phases: tuple[str, ...] = PHASES, again: bool = False) -> list[dict]:
+               ledger: Ledger | None = None, phases: tuple[str, ...] = PHASES, again: bool = False,
+               min_pct: float = 0.0, order: str = "fresh") -> list[dict]:
     """Open functions with a draft, never visited (or whose source changed) first, then worst relative score."""
     ledger = ledger or Ledger()
+    if min_pct:
+        # a minimum percentage is the same bound as a maximum relative distance
+        bound = (100.0 - min_pct) / 100.0
+        max_score = bound if max_score is None else min(max_score, bound)
     claimed = {r[0] for r in common.query("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id")}
     fns = common.open_functions(max_score=max_score, only_permuted=not any_permuted)
     out = []
@@ -116,7 +126,8 @@ def candidates(max_score: float | None = 0.06, unit: str = "", limit: int = 0, a
         out.append(fn)
     def key(fn: dict):
         s = ledger.summary(fn["name"])
-        return (s["visits"], fn["score"] / max(fn["n_insns"], 1), fn["n_insns"])
+        ratio = fn["score"] / max(fn["n_insns"], 1)
+        return (ratio, s["visits"], fn["n_insns"]) if order == "closest" else (s["visits"], ratio, fn["n_insns"])
     out.sort(key=key)
     return out[:limit] if limit else out
 
@@ -155,6 +166,21 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
                                     submit_match=submit_match)
                 out = {"best_pct": got.best_pct, "matched": got.matched, "submitted": got.submitted,
                        "note": got.note}
+            elif name == "flags":
+                from . import csource, flags
+                out = flags.try_for(symbol, jobs=jobs)
+                if out.get("applied"):
+                    if submit_match:
+                        now = _unit_text(fn)
+                        _, start, end = csource.find(now, [], symbol)
+                        if start >= 0:
+                            helpers, definition = csource.split_extra(now[start:end])
+                            answer = search.submit(symbol, definition, helpers)
+                            out["submitted"] = answer
+                            out["matched"] = bool(answer.get("matched"))
+                else:
+                    out["note"] = f"{out.get('why', 'not applied')} (best {out.get('pct')}%)"
+                    out["pct"] = -1.0
             else:
                 result["phases"].append({"phase": name, "skipped": "unknown phase"})
                 continue
@@ -186,12 +212,13 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
 
 def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: int, count: int, seed: int,
          submit_match: bool, again: bool, forever: bool, idle: float, phases: tuple[str, ...],
-         any_permuted: bool = False, say=print) -> dict:
+         any_permuted: bool = False, min_pct: float = 0.0, order: str = "fresh", say=print) -> dict:
     ledger = Ledger()
     total = {"visited": 0, "matched": 0, "phases": 0}
     try:
         while True:
-            todo = candidates(max_score=max_score, unit=unit, limit=limit, any_permuted=any_permuted, ledger=ledger)
+            todo = candidates(max_score=max_score, unit=unit, limit=limit, any_permuted=any_permuted,
+                              ledger=ledger, min_pct=min_pct, order=order)
             if not todo:
                 if not forever:
                     break

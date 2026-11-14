@@ -9,6 +9,7 @@ breaks another becomes a split instead of being thrown away.  `--apply` does tha
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -302,3 +303,39 @@ def apply_best(unit: str, symbol: str, jobs: int = common.JOBS) -> dict:
     clean = not result.regressions.get(win["set"])
     out = apply_flags(unit, win["flags"], [symbol]) if clean else split_out(unit, symbol, win["flags"], [symbol])
     return {"symbol": symbol, "unit": unit, "set": win["set"], "flags": win["flags"], **out}
+
+
+def _sweep_cached(unit: str, jobs: int = common.JOBS) -> dict:
+    """The unit's sweep, reused while neither its source nor its flags changed (a sweep is ~24 unit compiles)."""
+    text = common.source_path(unit).read_text(encoding="utf-8")
+    key = hashlib.sha1((text + json.dumps(file_flags(unit), sort_keys=True)).encode()).hexdigest()[:16]
+    cache = common.STATE / "flags" / f"{unit}-{key}.json"
+    if cache.exists():
+        try:
+            return json.loads(cache.read_text(encoding="utf-8"))
+        except ValueError:
+            pass
+    result = sweep_unit(unit, jobs)
+    data = {"unit": unit, "t": round(time.time(), 3), "wins": result.wins, "regressions": result.regressions}
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps(data, indent=0), encoding="utf-8")
+    return data
+
+
+def try_for(symbol: str, jobs: int = common.JOBS, allow_split: bool = False) -> dict:
+    """One function's flag sweep, applied only when it is a win: whole unit if clean, never a split unless asked."""
+    unit = common.unit_of(symbol)
+    data = _sweep_cached(unit, jobs)
+    win = data["wins"].get(symbol)
+    if not win:
+        return {"symbol": symbol, "unit": unit, "applied": False, "why": "no flag set changed it"}
+    out = {"symbol": symbol, "unit": unit, "set": win["set"], "flags": win["flags"], "pct": win["pct"]}
+    if win["pct"] < 100:
+        return {**out, "applied": False, "why": f"best set reaches {win['pct']:.3f}%, not 100"}
+    regressions = data["regressions"].get(win["set"]) or []
+    if regressions and not allow_split:
+        return {**out, "applied": False, "needs_split": True, "regressions": regressions[:8],
+                "why": "these flags regress other functions in the unit (run `flags --apply` to split it out)"}
+    got = apply_flags(unit, win["flags"], [symbol]) if not regressions else split_out(unit, symbol, win["flags"], [symbol])
+    return {**out, **got}
+

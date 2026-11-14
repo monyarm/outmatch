@@ -107,24 +107,28 @@ def cmd_loop(args) -> int:
     """Work the queue without naming functions: levers, pragmas and the permuter, in that order."""
     from . import loopmode
     phases = tuple(p.strip() for p in args.phases.split(",") if p.strip())
+    if phases == ("all",):
+        phases = loopmode.PHASES
     bad = [p for p in phases if p not in loopmode.PHASES]
     if bad:
         raise SystemExit(f"unknown phase(s): {', '.join(bad)} (choose from {', '.join(loopmode.PHASES)})")
     ledger = loopmode.Ledger()
     todo = loopmode.candidates(max_score=args.max_ratio, unit=args.unit, limit=args.limit or 0,
-                               any_permuted=args.any, ledger=ledger, phases=phases, again=args.again)
+                               any_permuted=args.any, ledger=ledger, phases=phases, again=args.again,
+                               min_pct=args.min_pct, order=args.order)
     if args.dry_run:
         for fn in todo:
             s = ledger.summary(fn["name"])
             _say({"symbol": fn["name"], "unit": fn["unit"], "score": fn["score"], "insns": fn["n_insns"],
-                  "visits": s["visits"], "best_pct": round(s["best_pct"], 3),
+                  "pct": round(loopmode.pct_of(fn), 3), "visits": s["visits"],
+                  "best_pct": round(s["best_pct"], 3),
                   "phases": {k: v["n"] for k, v in s["phases"].items()}})
         _say({"candidates": len(todo)})
         return 0
     out = loopmode.loop(max_score=args.max_ratio, unit=args.unit, limit=args.limit or 0, seconds=args.seconds,
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
                         again=args.again, forever=args.forever, idle=args.idle, phases=phases,
-                        any_permuted=args.any)
+                        any_permuted=args.any, min_pct=args.min_pct, order=args.order)
     _say({**out, "queued": len(todo)})
     return 0
 
@@ -192,12 +196,18 @@ def main(argv: list[str] | None = None) -> int:
     sb.add_argument("file")
     sb.set_defaults(func=cmd_submit)
 
-    lp = sub.add_parser("loop", help="work the near-miss queue with levers, pragmas and the permuter, keeping a ledger")
+    lp = sub.add_parser("loop", help="work the near-miss queue with levers, pragmas, the permuter and (opt-in) flags")
     lp.add_argument("--max-ratio", type=float, default=0.06, help="worst relative score to include (0.005 = 0.5%%)")
+    lp.add_argument("--min-pct", type=float, default=0.0,
+                    help="only functions already at or above this objdiff percentage (e.g. 99.5), closest first")
+    lp.add_argument("--order", choices=("fresh", "closest"), default="fresh",
+                    help="fresh = least-visited first (default); closest = highest percentage first")
     lp.add_argument("--unit", default="", help="only functions of this unit")
     lp.add_argument("--limit", type=int, default=0, help="functions this run (0 = every candidate)")
     lp.add_argument("--seconds", type=float, default=900, help="budget per function")
-    lp.add_argument("--phases", default="levers,pragma,permuter")
+    lp.add_argument("--phases", default="levers,pragma,permuter,flags",
+                    help="comma-separated phases ('all' = levers,pragma,permuter,flags); flags sweeps the unit and "
+                         "applies only a clean winning set")
     lp.add_argument("--jobs", type=int, default=common.JOBS)
     lp.add_argument("--count", type=int, default=64, help="permuter variants per batch")
     lp.add_argument("--seed", type=int, default=0)
