@@ -177,7 +177,7 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
                         _, start, end = csource.find(now, [], symbol)
                         if start >= 0:
                             helpers, definition = csource.split_extra(now[start:end])
-                            answer = search.submit(symbol, definition, helpers)
+                            answer = search.submit(symbol, definition, helpers, fn=fn)
                             out["submitted"] = answer
                             out["matched"] = bool(answer.get("matched"))
                 else:

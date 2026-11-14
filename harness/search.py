@@ -162,8 +162,33 @@ def source_with(unit_text: str, symbol: str, definition: str, helpers: str = "")
     return unit_text[:start] + helpers + definition.rstrip() + "\n" + unit_text[end:]
 
 
-def submit(symbol: str, definition: str, helpers: str = "") -> dict:
-    """Ask the app to judge (and, on a match, write+commit+record) one function.  Returns its answer."""
+def verify(fn: dict, definition: str, helpers: str = "") -> float:
+    """Score the finalist from a freshly copied tree, the way the app will build it after its next edit."""
+    unit = fn["unit"]
+    root = common.make_scratch(unit, 99, fresh=True)
+    text = common.source_path(unit).read_text(encoding="utf-8")
+    obj = common.scratch_compile(root, unit, source_with(text, fn["name"], definition, helpers),
+                                 f"build/{common.VERSION}/src/auto/{unit}.obj")
+    return common.score(common.target_obj(unit), obj, fn["name"])
+
+
+def submit(symbol: str, definition: str, helpers: str = "", fn: dict | None = None, improve: bool = False) -> dict:
+    """Ask the app to judge (and, on a match, write+commit+record) one function.  Returns its answer.
+
+    With `fn`, the finalist is first recompiled in a freshly copied tree; a stale worker tree or a header an agent
+    edited since could otherwise claim a match the app then refuses (and a refused attempt takes the `you` claim).
+    """
+    if fn is not None:
+        want = db_best_pct(fn) if improve else 100.0
+        try:
+            fresh = verify(fn, definition, helpers)
+        except common.OutmatchError as e:
+            common.log("gate", symbol=symbol, error=str(e)[:200])
+            return {"matched": False, "skipped": "fresh build failed", "fresh_pct": -1.0, "text": str(e)[:400]}
+        if fresh < want - 1e-6:
+            common.log("gate", symbol=symbol, fresh=round(fresh, 3), want=round(want, 3))
+            return {"matched": False, "skipped": f"fresh score {fresh:.3f} below {want:.3f}",
+                    "fresh_pct": fresh, "text": ""}
     unit = common.unit_of(symbol)
     if helpers:
         # the app only accepts one definition through /api/try: put the variant's helpers into the file first
@@ -232,7 +257,7 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
             if submit_match:
                 helpers, definition = csource.split_extra(current)
                 try:
-                    out.submitted = submit(symbol, definition, helpers)
+                    out.submitted = submit(symbol, definition, helpers, fn=fn)
                     out.matched = bool(out.submitted.get("matched"))
                 except common.OutmatchError as e:
                     out.note = str(e)[:300]
@@ -274,7 +299,7 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
                     out.matched, out.best_pct = True, 100.0
                     if submit_match:
                         try:
-                            out.submitted = submit(symbol, definition, helpers)
+                            out.submitted = submit(symbol, definition, helpers, fn=fn)
                             out.matched = bool(out.submitted.get("matched"))
                         except common.OutmatchError as e:
                             out.note = str(e)[:300]
@@ -291,7 +316,7 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
         out.seconds = time.monotonic() - started
         if apply_best and not out.matched and best_pct < 100 and best_pct > db_best_pct(fn) + 1e-6:
             try:
-                out.won = submit(symbol, best_src, best_helpers)
+                out.won = submit(symbol, best_src, best_helpers, fn=fn, improve=True)
             except common.OutmatchError as e:
                 out.note = str(e)[:300]
         out.note = out.note or f"{out.tries} variants, {pool.compiles} compiles"
@@ -329,7 +354,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
             if submit_match:
                 helpers, definition = csource.split_extra(current)
                 try:
-                    out["submitted"] = submit(symbol, definition, helpers)
+                    out["submitted"] = submit(symbol, definition, helpers, fn=fn)
                     out["matched"] = bool(out["submitted"].get("matched"))
                 except common.OutmatchError as e:
                     out["note"] = str(e)[:300]
@@ -349,7 +374,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
                 out["matched"], out["best_pct"] = True, 100.0
                 if submit_match:
                     try:
-                        out["submitted"] = submit(symbol, definition, helpers)
+                        out["submitted"] = submit(symbol, definition, helpers, fn=fn)
                         out["matched"] = bool(out["submitted"].get("matched"))
                     except common.OutmatchError as e:
                         out["note"] = str(e)[:300]
@@ -357,7 +382,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
         out["compiles"] = pool.compiles
         if apply_best and not out["matched"] and out["best_pct"] > db_best_pct(fn) + 1e-6:
             try:
-                out["won"] = submit(symbol, best_def, best_helpers)
+                out["won"] = submit(symbol, best_def, best_helpers, fn=fn, improve=True)
             except common.OutmatchError as e:
                 out["note"] = str(e)[:300]
     finally:

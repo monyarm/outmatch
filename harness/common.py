@@ -252,15 +252,29 @@ def scratch_compile(root: Path, unit: str, source_text: str, out_rel: str,
     return out
 
 
-def make_scratch(unit: str, index: int = 0) -> Path:
+def sync_tree(root: Path) -> None:
+    """Refresh a reused worker tree's headers from the live project (agents edit them, and they change codegen)."""
+    for base in ("include", "src"):
+        for path in (ROOT / base).rglob("*.h"):
+            if not path.is_file():
+                continue
+            target = root / path.relative_to(ROOT)
+            src_mtime = path.stat().st_mtime_ns
+            if not target.is_file() or src_mtime > target.stat().st_mtime_ns:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+
+
+def make_scratch(unit: str, index: int = 0, fresh: bool = False) -> Path:
     """A reusable scratch tree for one worker: the project's sources/headers/config/tools, nothing else.
 
     One tree per worker index, reused for every unit (rebuilding the file it compiles each time), so a sweep over
-    many units copies once.  Set OUTMATCH_FRESH=1 to force a new copy.
+    many units copies once.  Set OUTMATCH_FRESH=1 (or pass fresh=True) to force a new copy.
     """
     root = WORK / f"w{index}"
     stamp = root / ".ready"
-    if stamp.is_file() and not os.environ.get("OUTMATCH_FRESH"):
+    if stamp.is_file() and not fresh and not os.environ.get("OUTMATCH_FRESH"):
+        sync_tree(root)
         return root
     if root.exists():
         shutil.rmtree(root)

@@ -81,6 +81,11 @@ keeps it as `best_source` and updates `best_score`, so the GUI and the app's own
 worse drafts stay in `.outmatch/best/` and the ledger; each submitted improvement takes the `you` claim until the app
 releases it, so run it when the agents are not competing for the same functions.
 
+Before anything is submitted, the finalist is recompiled in a **freshly copied** tree and rescored; a local 100 that
+does not survive (`fresh 99.868 below 100.000`, as happened once with a stale `include/`) is logged to
+`.outmatch/gate.jsonl` and never reaches the app, so it cannot take the `you` claim. Worker trees also refresh changed
+headers (`include/`, `src/*.h`) on reuse, so intermediate percentages track the live declarations.
+
 The ledger is append-only JSONL, one row per visit and per phase run, with the source hash of the unit at the time.
 That is what makes runs resumable and cheap: the next run picks the least-visited functions first (then worst
 relative score), and a phase whose source hash has not changed is skipped. When an agent or you edit the unit, the
