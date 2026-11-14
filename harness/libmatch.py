@@ -99,12 +99,18 @@ def library_index(lib_dir: Path, names):
     """signature -> [(lib, member, symbol)], over every object of the libraries that exist."""
     index = defaultdict(list)
     files = 0
+    skipped: list[str] = []
     for lib in names:
         path = lib_dir / lib
         if not path.is_file():
             continue
+        try:
+            members = archive(path)
+        except ValueError:
+            skipped.append(lib)  # OMF or an import library's stub, not MS COFF
+            continue
         files += 1
-        for member, data in archive(path):
+        for member, data in members:
             if not member.lower().endswith(".obj"):
                 continue
             try:
