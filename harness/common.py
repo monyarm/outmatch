@@ -33,10 +33,44 @@ TOOLCHAINS = Path.home() / ".local/share/decompnet/toolchains/msvc"
 PACKS = (TOOLCHAINS, TOOLCHAINS.parent / "msvc2005")  # decompdecomp's MSVC packs: 6.0-7.1 (+ hand-added), 2005-2010
 
 
+KITS = TOOLCHAINS.parent / "visualcpp" / ".decompnet-toolchain.json"  # Setup's "Visual C++ (your own copy)" folders
+
+
+def own_compilers() -> dict[str, Path]:
+    """{"own-13.0.9044": folder} for each own copy registered in Setup, named as decompdecomp names them (kits/
+    visualcpp.py: c2.dll's file version, first three parts)."""
+    try:
+        folders = json.loads(KITS.read_text(encoding="utf-8")).get("folders") or []
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    for folder in map(Path, folders):
+        c2 = next((p for p in (folder / "Bin" / "c2.dll", folder / "Bin" / "C2.DLL") if p.is_file()), None)
+        if c2 and (v := file_version(c2)):
+            out["own-" + ".".join(v.split(".")[:3])] = folder
+    return out
+
+
+def file_version(path: Path) -> str | None:
+    """A PE's VS_FIXEDFILEINFO file version as "13.0.9044.0"."""
+    b = path.read_bytes()
+    i = b.find(b"\xbd\x04\xef\xfe")  # VS_FIXEDFILEINFO signature
+    if i < 0:
+        return None
+    ms, ls = int.from_bytes(b[i + 8:i + 12], "little"), int.from_bytes(b[i + 12:i + 16], "little")
+    return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+
+
 def cl_exe(version: str) -> Path | None:
-    """A version's CL.EXE in the first pack that has it, as tools/configure.py looks it up."""
-    return next((p for pack in PACKS for p in (pack / version / "Bin" / "CL.EXE", pack / version / "Bin" / "cl.exe")
-                 if p.is_file()), None)
+    """A version's CL.EXE in the first pack that has it, as tools/configure.py looks it up, or an own copy's."""
+    homes = [own] if (own := own_compilers().get(version)) else [pack / version for pack in PACKS]
+    return next((p for home in homes for p in (home / "Bin" / "CL.EXE", home / "Bin" / "cl.exe") if p.is_file()), None)
+
+
+def default_compiler() -> str:
+    """The project's own Visual C++ (tools/configure.py's MSVC_VERSION): every file file_compilers.json doesn't name."""
+    m = re.search(r'^MSVC_VERSION = "([^"]+)"', (ROOT / "tools" / "configure.py").read_text(encoding="utf-8"), re.M)
+    return m.group(1) if m else "6.0"
 BUILD = ROOT / "build" / VERSION
 TARGETS = BUILD / "target"
 STATE = ROOT / ".outmatch"
@@ -206,6 +240,9 @@ def build_command(unit: str) -> list[str]:
         data = json.loads(cache.read_text()) if cache.is_file() else {}
     except ValueError:  # a cache half-written by another process: rebuild it
         data = {}
+    stamp = str((ROOT / "build.ninja").stat().st_mtime_ns)
+    if data.get("__build.ninja__") != stamp:  # configure ran again (a compiler or flags changed): every argv may differ
+        data = {"__build.ninja__": stamp}
     if unit in data:
         return data[unit]
     obj = f"build/{VERSION}/src/auto/{unit}.obj"
@@ -264,7 +301,8 @@ def scratch_compile(root: Path, unit: str, source_text: str, out_rel: str,
         for i, tok in enumerate(cleaned[:-1]):
             if tok == "--compiler":
                 cleaned[i + 1] = cl
-            elif tok == "--include" and Path(cleaned[i + 1]).parent.parent in PACKS:
+            elif tok == "--include" and (Path(cleaned[i + 1]).parent.parent in PACKS
+                                         or Path(cleaned[i + 1]).parent in own_compilers().values()):
                 cleaned[i + 1] = cl.parent.parent / "Include"  # its own headers, not the unit's version's
     out = root / out_rel
     out.parent.mkdir(parents=True, exist_ok=True)

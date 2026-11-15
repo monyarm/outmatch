@@ -27,12 +27,12 @@ STATE = common.STATE / "compiler.json"
 
 
 def installed() -> list[str]:
-    return [v for v in VERSIONS if common.cl_exe(v)]
+    return [v for v in VERSIONS if common.cl_exe(v)] + sorted(common.own_compilers())
 
 
 def configured(unit: str) -> str:
-    """The version the project builds this unit with (the app's file_compilers.json, default 6.0)."""
-    return common.file_compilers().get(f"src/auto/{unit}.cpp", "6.0")
+    """The version the project builds this unit with (the app's file_compilers.json, else the project's own)."""
+    return common.file_compilers().get(f"src/auto/{unit}.cpp", common.default_compiler())
 
 
 def sweep(fn: dict, versions: list[str] | None = None, text: str | None = None) -> dict:
