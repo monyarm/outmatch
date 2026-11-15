@@ -1,7 +1,7 @@
 # outmatch — match functions outside decompdecomp, record them inside it
 
 `decompdecomp`'s own permuter is capped: it works only on functions scoring within 6%, 64 variants a turn, 60 seconds a
-turn, four turns (`permuted < 4`). Every one of this project's 176 near misses has used all four turns, so the app
+turn, four turns (`permuted < 4`). On a large project, every near miss soon uses up all four turns, so the app
 will never look at them again. `outmatch` runs the same permuter generator (and more) outside the app, as long as you
 like, in parallel scratch trees, and only tells the app about candidates that are exact matches.
 
@@ -10,22 +10,45 @@ Nothing is written into the project tree while searching. A match is submitted t
 and updates the database — the same path the GUI's **Try** uses. No restart, no SQL.
 
 ```
-tools/outmatch/outmatch.sh status
-tools/outmatch/outmatch.sh search '@func_00411E5A@12' --seconds 300
-tools/outmatch/outmatch.sh run --max-ratio 0.005 --limit 26 --seconds 120
+../outmatch/outmatch.sh status
+../outmatch/outmatch.sh search '@func_00411E5A@12' --seconds 300
+../outmatch/outmatch.sh run --max-ratio 0.005 --limit 26 --seconds 120
 ```
 
 ## Requirements
 
 - the decompdecomp app running with this project open (its `~/Decomp/.decomp/server.json` is read for the port and
   secret; submissions are credited to **you**),
-- a configured build (`build.ninja`, target objects in `build/casefile1/target/`),
+- a configured build (`build.ninja`, target objects in `build/<version>/target/`),
 - `objdiff-cli` (found on the PATH or in `~/.local/share/decompnet/toolchains/objdiff-cli/`),
 - the app's own Python for the permuter generator (taken from the ninja compile command, so it is always the right
   one).
 
-Everything else is the Python standard library. Scratch trees live in `/tmp/opencode/outmatch` (override with
-`OUTMATCH_ROOT`... see `harness/common.py`), and state/logs in `.outmatch/` (git-ignored).
+Everything else is the Python standard library. Scratch trees live in `/tmp/outmatch/<project folder>` (override with
+`OUTMATCH_WORK`), and state/logs in the project's `.outmatch/` (git-ignored there).
+
+## Where it runs
+
+outmatch is not part of any one project. Keep it beside the decompdecomp projects it works on and run it from inside
+one of them:
+
+```
+~/Decomp/
+  outmatch/                  this repository
+  case-file-1-casefile1/     a decompdecomp project (fork)
+  ...
+```
+
+```sh
+cd ~/Decomp/case-file-1-casefile1
+../outmatch/outmatch.sh status
+```
+
+It takes the project from the working directory: the nearest folder at or above it with
+`config/<version>/functions.json`. The version is that folder's name, and the app's name for the project (its slug)
+comes from decompdecomp's `projects` table by folder. Override any of them with `OUTMATCH_PROJECT`, `OUTMATCH_VERSION`
+and `OUTMATCH_SLUG`. The Claude Code skills in `skills/` (`msvc-matching`, `doc-driven-matching`) are linked into a
+project's `.claude/skills/`.
 
 ## Commands
 
@@ -55,10 +78,10 @@ are saved as C files under `.outmatch/best/` and are never written into `src/` u
 ## Loop mode and its ledger
 
 ```
-tools/outmatch/outmatch.sh loop --dry-run --limit 10     # what would be next
-tools/outmatch/outmatch.sh loop --dry-run --min-pct 99.9 --order closest  # the closest drafts first
-tools/outmatch/outmatch.sh loop --limit 5 --seconds 600  # levers, pragmas, permuter per function
-tools/outmatch/outmatch.sh report                        # what it has tried so far
+../outmatch/outmatch.sh loop --dry-run --limit 10     # what would be next
+../outmatch/outmatch.sh loop --dry-run --min-pct 99.9 --order closest  # the closest drafts first
+../outmatch/outmatch.sh loop --limit 5 --seconds 600  # levers, pragmas, permuter per function
+../outmatch/outmatch.sh report                        # what it has tried so far
 ```
 
 Each function is announced with its score and percentage, each phase prints a `start` line with its remaining budget,
@@ -102,7 +125,7 @@ scratch trees as the other commands.
 `harness/search.py` copies `src/`, `include/`, `config/` and `tools/` into one scratch tree per worker, replaces the
 target function's definition in its unit, and runs the exact compile command ninja uses for that unit (with the same
 include paths, the same flags, and `tools/names.py` symbol normalization). The object is scored with
-`objdiff-cli diff` against the delinked original in `build/casefile1/target/`, using the same diff options as the
+`objdiff-cli diff` against the delinked original in `build/<version>/target/`, using the same diff options as the
 app's progress report (`functionRelocDiffs=none`, combined sections). One compile is ~0.3 s; four workers give
 ~9 candidates/s, about 20–50× the app's per-candidate build-and-diff.
 
@@ -114,7 +137,7 @@ only 100s are submitted and the app has the final word.
 MSVC 6 flags are per file. `flags` compiles the whole unit once per candidate set and scores every function in it,
 which answers both questions at once: did this set fix anything, and did it break any function that already matched?
 
-- clean win for the target function → `--apply` writes the delta into `config/casefile1/file_flags.json` (e.g. `/O1`,
+- clean win for the target function → `--apply` writes the delta into `config/<version>/file_flags.json` (e.g. `/O1`,
   `/Oy-`), lets ninja's configure rule regenerate `build.ninja`, rebuilds the unit, and the app's next check measures
   it;
 - win but regressions → `--apply` moves the function into `src/auto/text_<addr>.cpp` with the unit's declaration
@@ -135,10 +158,10 @@ unchanged.
 ## Libraries already in the binary (`libmatch`)
 
 The game links the C/C++ runtime statically (`/MT`: no `msvcr*.dll` import, `.tls` present), so a few hundred
-functions in `orig/casefile1.exe` are not the game's code at all — they are Microsoft's. `libmatch` finds them by
+functions in `orig/<version>.exe` are not the game's code at all — they are Microsoft's. `libmatch` finds them by
 compiling nothing: it unpacks the VC6 libraries' `.obj` members, extracts every function (they are built `/Gy`, one
 section per function), and compares a signature of `(size, bytes with relocation fields zeroed, relocation
-offsets/types)` against every function in `build/casefile1/target/*.obj`. The delivered image was linked with the
+offsets/types)` against every function in `build/<version>/target/*.obj`. The delivered image was linked with the
 same library build, so a signature match is byte identity in everything the linker did not fill in.
 
 - Only signatures unique in the library are accepted, and a signature shared by two project functions is rejected:
@@ -185,12 +208,12 @@ SP5's 9044). A `return true` compiled to `xor eax, eax; inc eax` rather than `pu
 back end; plain `6.0` cannot produce it.
 
 The project's default is the SP5 Processor Pack (`own-13.0.9044`, `MSVC_VERSION` in `tools/configure.py`); files
-whose matched functions need another build are pinned in `config/casefile1/file_compilers.json`.
+whose matched functions need another build are pinned in `config/<version>/file_compilers.json`.
 
 ```
-tools/outmatch/outmatch.sh compiler --symbol '@func_00413AE5@4'          # per-function sweep, report only
-tools/outmatch/outmatch.sh compiler --unit text_0041BFF4                # every open function in the unit
-tools/outmatch/outmatch.sh compiler --symbol SYM --apply                # pin file_compilers.json if safe
+../outmatch/outmatch.sh compiler --symbol '@func_00413AE5@4'          # per-function sweep, report only
+../outmatch/outmatch.sh compiler --unit text_0041BFF4                # every open function in the unit
+../outmatch/outmatch.sh compiler --symbol SYM --apply                # pin file_compilers.json if safe
 ```
 
 `--apply` refuses when the version would regress a function the unit already matches, and prints `needs_split` with
@@ -200,43 +223,35 @@ So a function that matches only under another build than its file's neighbours h
 pinned to that build (see "Flags, and splitting a function out"; the 2026-11-15 splits moved 38 functions this way).
 The `compiler` phase of `loop` reports the sweep for every candidate it visits.
 
-## The compilers this project has
+## Adding compilers
 
-Four builds are in use (as of 2026-11-15; 190 source files):
+outmatch sweeps every compiler decompdecomp can build with: its own packs (`6.0`, `7.0`, `7.1`, `8.0`, `8.0SP1`) and
+every "Microsoft Visual C++ (your own copy)" kit registered in Setup, which decompdecomp names `own-<C2.DLL build>`
+(`own-13.0.9044` for decomp.me's `msvc6.5pp`). To add one: unpack it so `Bin/CL.EXE`, `Bin/c2.dll` and `Include/` sit
+in one folder, then register it in Setup > Compilers & tools or with
+`POST /api/toolchain {"id": "visualcpp", "folder": "<folder>", "accept_license": true}`.
 
-| name in the project | build (`C2.DLL`) | what it is | where it comes from | files |
-|---|---|---|---|---|
-| **`own-13.0.9044`** | 13.00.9044 | VC6 SP5 + Processor Pack (decomp.me `msvc6.5pp`) | [OmniBlade `msvc6.5pp.tar.gz`](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (sha256 `0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e`), registered as an own-copy kit | 134 (the default) |
-| `6.0` | 12.00.8168 | VC6 RTM | decompdecomp's `msvc` pack | 54 (the CRT tail, and the functions split out for it) |
-| `7.0` | 13.00.9466 | .NET 2002 | decompdecomp's `msvc` pack | 1 (`text_0043DE87`) |
-| `own-13.0.9030` | 13.00.9030 | VS.NET 2002 Beta 1 | archive.org `ms-vsnet-b1`: `cl.exe`/`c2.dll` from `vsentd2.iso`, `c1.dll`/`c1xx.dll`, headers and `msvcr70`/`msvcp70` from `vsentd1.iso` (both under `Program Files/Microsoft Visual Studio.NET/Vc7`), plus `mspdb70.dll`; Windows SDK headers the disc lacks from the `7.0` pack | 1 (`text_0041B02C`) |
+Two gotchas, both measured:
 
-Other builds (VC6 SP3-SP6, the SP4 Processor Pack, 7.1, 2005 RTM and SP1) are installed only so the `compiler` phase can try
-them; the 2026-11-15 sweep of every unit under all of them found nothing more to use.
+- **After adding a kit, regenerate `build.ninja` once.** decompdecomp writes the kits into `build.ninja`'s `configure`
+  rule (`--own`) only when it sets a project up, so a kit added later is unknown to the build: every file switched to it
+  fails to build and the app's switch keeps the old compiler. From the project:
 
-**Adding one.** Unpack it so `Bin/CL.EXE`, `Bin/c2.dll` and `Include/` sit in one folder (here
-`~/.local/share/decompnet/toolchains/msvc/<name>`), then register it as a "Microsoft Visual C++ (your own copy)" kit:
-Setup > Compilers & tools, or `POST /api/toolchain {"id": "visualcpp", "folder": "<folder>", "accept_license": true}`.
-decompdecomp names it `own-<C2.DLL build>` and lists it in Settings, where the per-file and whole-game compiler switches
-accept it; the harness finds the same names (`common.own_compilers`, `compilers.installed`).
+  ```sh
+  PY=~/.cache/decompdecomp-nix/<version>/venv/bin/python   # the app's own interpreter
+  eval "$PY tools/configure.py <version> $($PY -c 'import shlex; from decompnet.consoles.pc import scratch; print(shlex.join(scratch.tool_args(("visualcpp",))))')"
+  grep -c -- --own build.ninja      # > 0
+  ```
 
-**After adding a kit, regenerate `build.ninja` once.** The app writes the kits into `build.ninja`'s `configure` rule
-(`--own`) only when it sets the project up, so a kit added later is unknown to the build: every file switched to it
-fails to build and the switch keeps the old compiler. Run configure with the app's arguments once:
+- **New units need their target objects.** The app's build runs `ninja all_source`, which compiles but never delinks; a
+  unit added by hand (a split) has no `build/<version>/target/*.obj` until `tools/delink.py config/<version>/functions.json
+  build/<version>/target` runs, and `/api/fork/check` fails with "Failed to open .../target/<unit>.obj" until then.
 
-```sh
-PY=~/.cache/decompdecomp-nix/1.0.10-alpha.1/venv/bin/python
-eval "$PY tools/configure.py casefile1 $($PY -c 'import shlex; from decompnet.consoles.pc import scratch; print(shlex.join(scratch.tool_args(("visualcpp",))))')"
-grep -c -- --own build.ninja      # > 0
-```
-
-**New units need their target objects.** The app's build runs `ninja all_source`, which compiles but never delinks; a
-unit added by hand (a split) has no `build/casefile1/target/*.obj` until `tools/delink.py config/casefile1/functions.json
-build/casefile1/target` runs, and `/api/fork/check` fails with "Failed to open .../target/<unit>.obj" until then.
-
-**Durable fix upstream.** The kits live on this machine only. decompdecomp could ship them: `[[msvc.parts]]` entries
-in `src/decompnet/toolchains.toml` (url, sha256, `into`) plus their names in `consoles/pc/__init__.py`'s
-`MSVC_VERSIONS`, and a reconfigure when a kit is added.
+Sources for VC6 service packs and Processor Packs: the
+[OmniBlade/decomp.me `msvcwin9x` release](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (6.0, 6.3, 6.4,
+6.5, 6.5pp, 6.6, 7.0 as Bin+Include tarballs; decomp.me serves the same as `ghcr.io/decompme/compilers/win9x/*`), and
+archive.org's original media (the VS6 SP4 CD's `enu/PP/vcpp.exe` is the SP4 Processor Pack, `c2.dll` 13.00.8876; VS.NET
+2002 Beta 1 is 13.00.9030). Each project's own list of what it uses belongs in that project.
 
 ## Drafts for functions with no C at all
 
@@ -244,24 +259,24 @@ About a quarter of the game's bytes are in functions that have never had a singl
 and `loop` cannot touch them, because both need a draft to start from. `draft` turns one into a work packet:
 
 ```
-tools/outmatch/outmatch.sh draft --limit 5 --min-size 1024 --write   # .outmatch/drafts/<symbol>.md
-tools/outmatch/outmatch.sh draft --symbol '@func_0042BD7C@16' --print
+../outmatch/outmatch.sh draft --limit 5 --min-size 1024 --write   # .outmatch/drafts/<symbol>.md
+../outmatch/outmatch.sh draft --symbol '@func_0042BD7C@16' --print
 ```
 
 A packet holds the symbol, unit, address, size, instruction count and calling convention; the delinked target's
 disassembly; the Ghidra pseudocode for that address; the unit's includes and class/struct declarations; and the
 function's calls and data references with any names the project knows. Write the C from that, then
-`tools/outmatch/outmatch.sh try SYMBOL draft.c` - it compiles the draft in the function's own unit and prints the
+`../outmatch/outmatch.sh try SYMBOL draft.c` - it compiles the draft in the function's own unit and prints the
 percentage. A first draft that compiles and beats the (nonexistent) best can be pushed through the app with `try
 --submit` or `loop --apply-improvements`, after which the app's permuter can take it from there.
 
 ## Skills
 
-Two project-local skills drive the same tools:
+Two Claude Code skills in `skills/` drive the same tools (link them into a project as `.claude/skills/<name>`):
 
-- `.claude/skills/msvc-matching/` — the MSVC 6 lever catalogue distilled from CMR2Decomp and brickpark-decomp, with a
+- `skills/msvc-matching/` — the MSVC 6 lever catalogue distilled from CMR2Decomp and brickpark-decomp, with a
   symptom → lever index, and instructions for turning a diff into a source-level experiment.
-- `.claude/skills/doc-driven-matching/` — give it a link (a decomp's write-up, a compiler manual, a blog post), and it
+- `skills/doc-driven-matching/` — give it a link (a decomp's write-up, a compiler manual, a blog post), and it
   extracts matching-relevant claims, turns the useful ones into experiments (`pragma`, `flags`, `levers`, or a manual
   edit + `/api/try`), and records what worked.
 

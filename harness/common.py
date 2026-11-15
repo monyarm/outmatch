@@ -21,10 +21,33 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[3]  # tools/outmatch/harness/common.py -> project root
+def _project_root() -> Path:
+    """The decompdecomp project outmatch works on: $OUTMATCH_PROJECT, else the nearest folder at or above the working
+    directory that has config/<version>/functions.json (a decompdecomp PC fork)."""
+    if os.environ.get("OUTMATCH_PROJECT"):
+        return Path(os.environ["OUTMATCH_PROJECT"]).resolve()
+    here = Path.cwd().resolve()
+    for d in (here, *here.parents):
+        if any((d / "config").glob("*/functions.json")):
+            return d
+    sys.exit("outmatch: run it inside a decompdecomp project (a folder with config/<version>/functions.json), "
+             "or set OUTMATCH_PROJECT")
+
+
+def _version(root: Path) -> str:
+    """The game version the project builds: $OUTMATCH_VERSION, else its only config/<version>/functions.json."""
+    if os.environ.get("OUTMATCH_VERSION"):
+        return os.environ["OUTMATCH_VERSION"]
+    found = sorted(p.parent.name for p in (root / "config").glob("*/functions.json"))
+    if len(found) != 1:
+        sys.exit(f"outmatch: {root} has config for {found or 'no version'}: set OUTMATCH_VERSION")
+    return found[0]
+
+
+ROOT = _project_root()
 APP_HOME = Path(os.environ.get("DECOMPNET_HOME", Path.home() / "Decomp" / ".decomp"))
 DB = APP_HOME / "decomp.db"
-VERSION = os.environ.get("OUTMATCH_VERSION", "casefile1")
+VERSION = _version(ROOT)
 CONFIG = ROOT / "config" / VERSION
 FUNCTIONS_JSON = CONFIG / "functions.json"
 FILE_FLAGS = CONFIG / "file_flags.json"
@@ -74,10 +97,22 @@ def default_compiler() -> str:
 BUILD = ROOT / "build" / VERSION
 TARGETS = BUILD / "target"
 STATE = ROOT / ".outmatch"
-WORK = Path(os.environ.get("OUTMATCH_WORK", "/tmp/opencode/outmatch"))
+WORK = Path(os.environ.get("OUTMATCH_WORK", f"/tmp/outmatch/{ROOT.name}"))  # scratch trees, one set per project
 OBJDIFF_OPTS = ("functionRelocDiffs=none", "combineDataSections=true", "combineTextSections=true",
                 "ppc.calculatePoolRelocations=false")
-SLUG = "case-file-1-casefile1"
+def _slug(root: Path) -> str:
+    """decompdecomp's name for the project: $OUTMATCH_SLUG, else the projects row whose folder is this one."""
+    if os.environ.get("OUTMATCH_SLUG"):
+        return os.environ["OUTMATCH_SLUG"]
+    try:
+        with sqlite3.connect(f"file:{DB}?mode=ro", uri=True, timeout=30) as db:
+            row = db.execute("SELECT slug FROM projects WHERE root=?", (str(root),)).fetchone()
+    except sqlite3.Error:
+        row = None
+    return row[0] if row else root.name
+
+
+SLUG = _slug(ROOT)
 JOBS = int(os.environ.get("OUTMATCH_JOBS", max(1, min(8, (os.cpu_count() or 4) // 2))))
 
 

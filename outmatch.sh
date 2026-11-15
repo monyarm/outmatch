@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # outmatch: match functions outside decompdecomp, submit matches through its live API.
-# Runs from anywhere; the harness needs to live in this directory for its module imports.
+# Run it from inside the decompdecomp project to work on (or set OUTMATCH_PROJECT); it finds the harness beside itself.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$here"
+export PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}"
 exec "${PYTHON:-python3}" -m harness.cli "$@"

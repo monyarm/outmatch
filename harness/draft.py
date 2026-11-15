@@ -128,7 +128,7 @@ def packet(fn: dict) -> str:
         "",
         "## How to test",
         f"```",
-        f"tools/outmatch/outmatch.sh try '{symbol}' draft.c",
+        f"../outmatch/outmatch.sh try '{symbol}' draft.c",
         f"```",
         "A compiling definition that beats the app's best is submitted by `loop --apply-improvements`; a 100 is "
         "committed by the app.",

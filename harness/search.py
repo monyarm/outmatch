@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,9 +29,12 @@ class Generator:
 
     def __init__(self) -> None:
         env = dict(os.environ)
-        env["OUTMATCH_ROOT"] = str(common.ROOT)
+        env["OUTMATCH_ROOT"] = env["OUTMATCH_PROJECT"] = str(common.ROOT)
+        env["OUTMATCH_VERSION"], env["OUTMATCH_SLUG"] = common.VERSION, common.SLUG
+        tool = Path(__file__).resolve().parents[1]  # (the harness lives beside outmatch.sh, not in the project)
+        env["PYTHONPATH"] = str(tool) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         self.proc = subprocess.Popen([common.app_python(), "-m", "harness.permuter_worker"],
-                                     cwd=common.ROOT / "tools" / "outmatch", stdin=subprocess.PIPE,
+                                     cwd=common.ROOT, stdin=subprocess.PIPE,
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, text=True, bufsize=1)
 
     def call(self, job: dict, timeout: float = 60) -> dict:

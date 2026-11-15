@@ -14,7 +14,7 @@ signature that occurs several times is only accepted when every copy has the sam
 Several --libs (one per Visual C++ build: 8168=.../msvc-6.00-8168/LIB, ...) are indexed together; a function
 every build carries unchanged counts once, and its hit lists the builds that have it.
 
---write merges the hits into config/casefile1/set_aside.json (symbol -> reason) and adds the real
+--write merges the hits into config/<version>/set_aside.json (symbol -> reason) and adds the real
 library names to functions.json's "names".  Nothing is measured until the app syncs; decompdecomp
 reads set_aside.json on every sync, and the functions it lists leave the progress denominator.
 """
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from collections import defaultdict
@@ -30,9 +31,9 @@ from pathlib import Path
 
 from . import common
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # tools/, for rebuild.py's COFF reader
+sys.path.insert(0, str(common.ROOT / "tools"))  # the project's tools/, for rebuild.py's COFF reader
 
-LIB_DIR_DEFAULT = Path("/tmp/opencode/vs60/vc_studio/main/VC98/Lib")
+LIB_DIR_DEFAULT = Path(os.environ.get("OUTMATCH_LIBS", "/tmp/opencode/vs60/vc_studio/main/VC98/Lib"))
 # the static C and C++ runtimes, plus the compatibility names library VC6 links by default
 DEFAULT_LIBS = ("LIBCMT.LIB", "LIBCPMT.LIB", "OLDNAMES.LIB")
 MIN_UNIQUE = 10       # a unique signature shorter than this is still coincidence-prone
