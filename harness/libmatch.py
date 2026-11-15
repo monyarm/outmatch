@@ -100,7 +100,8 @@ def signature(size: int, data: bytes, relocs):
 
 def library_files(lib_dir: Path, names):
     """(name, path) of each library in `lib_dir` (any case), or every .lib there for names == ["all"]."""
-    found = {p.name.upper(): p for p in lib_dir.iterdir() if p.suffix.lower() == ".lib"} if lib_dir.is_dir() else {}
+    found = {p.name.upper(): p for p in lib_dir.iterdir()
+             if p.suffix.lower() in (".lib", ".obj")} if lib_dir.is_dir() else {}  # (.obj: a library built here)
     return sorted(found.items()) if names == ["all"] else [(n.upper(), found[n.upper()]) for n in names
                                                            if n.upper() in found]
 
@@ -112,7 +113,7 @@ def library_index(lib_dirs, names):
     for build, lib_dir in lib_dirs:
         for lib, path in library_files(Path(lib_dir), names):
             try:
-                members = archive(path)
+                members = [(path.name, path.read_bytes())] if path.suffix.lower() == ".obj" else archive(path)
             except ValueError:
                 continue  # OMF or an import library's stub, not MS COFF
             files += 1
