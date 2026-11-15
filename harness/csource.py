@@ -82,7 +82,32 @@ def find(text: str, hints: list[str] | None, symbol: str | None = None) -> tuple
                         break
                     i = _skip_parens(masked, j)
                     continue
-                i += 1
+                if c == ":":
+                    # a constructor's initialiser list: the body is the next '{' outside parentheses
+                    k, depth = i, 0
+                    while k < len(masked):
+                        if masked[k] == "(":
+                            depth += 1
+                        elif masked[k] == ")":
+                            depth -= 1
+                        elif masked[k] == "{" and depth == 0:
+                            i = k
+                            break
+                        elif masked[k] == ";" and depth == 0:
+                            i = -1
+                            break
+                        k += 1
+                    else:
+                        i = -1
+                    if i < 0:
+                        break
+                    continue
+                # anything else here (a ')', an operator, a call argument...) is not a definition:
+                # `if (x.func_00436F2F(&a)) {` is a call site, not the function
+                i = -1
+                break
+            if i == -1:
+                continue
             if i < 0 or i >= len(masked):
                 continue
             start = m.start()
