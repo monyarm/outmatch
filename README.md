@@ -1,9 +1,21 @@
 # outmatch — match functions outside decompdecomp, record them inside it
 
-`decompdecomp`'s own permuter is capped: it works only on functions scoring within 6%, 64 variants a turn, 60 seconds a
-turn, four turns (`permuted < 4`). On a large project, every near miss soon uses up all four turns, so the app
-will never look at them again. `outmatch` runs the same permuter generator (and more) outside the app, as long as you
-like, in parallel scratch trees, and only tells the app about candidates that are exact matches.
+`decompdecomp`'s automatic permuter works in short background turns: only functions scoring within 6%, 64 variants a
+turn, 60 seconds a turn, four turns (`permuted < 4`). Since 1.0.10-alpha.2 the app also has a **Deep permuter** tab
+(decompdecomp #244): a user-started search of one function's saved C, limited to 1-120 minutes and up to 1,000,000
+variants, at most two at a time on the app's shared workers, saving every improvement that passes the normal judge.
+
+`outmatch` covers what neither does:
+
+- **whole queues, unattended** — `loop` walks every open function in an order you choose and keeps a ledger, instead
+  of one function per tab;
+- **more than permutations** — MSVC source levers, `#pragma`/declaration state carriers, per-unit compiler flags, and
+  a sweep of every installed compiler build (with splits when one function needs another build than its file);
+- **its own CPU budget** — any number of scratch trees outside the app's worker pool, for as long as you like;
+- **library code** — `libmatch` finds statically linked library functions (CRT, any `.lib` or locally built `.obj`)
+  byte for byte and sets them aside;
+- **drafts and repairs** — packets for functions with no C yet, restoring best attempts the tree lost, stale-record
+  checks.
 
 Nothing is written into the project tree while searching. A match is submitted through the app's own
 `POST /api/try`, which compiles it, diffs it, writes the definition into `src/auto/`, commits it on the fork's branch,
