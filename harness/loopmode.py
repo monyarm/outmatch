@@ -15,7 +15,7 @@ from pathlib import Path
 from . import common, search
 
 LEDGER = common.STATE / "ledger.jsonl"
-PHASES = ("levers", "pragma", "permuter", "flags")
+PHASES = ("msvc", "levers", "pragma", "permuter", "flags")
 
 
 def _now() -> float:
@@ -157,7 +157,10 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
             continue
         say(json.dumps({"symbol": symbol, "phase": name, "start": True, "budget": round(left, 1)}))
         try:
-            if name == "levers":
+            if name == "msvc":
+                from . import tricks
+                out = tricks.run(fn, jobs=jobs, submit_match=submit_match, apply_best=apply_best)
+            elif name == "levers":
                 from . import levers
                 out = levers.apply(symbol, jobs=jobs, submit_match=submit_match, apply_best=apply_best)
             elif name == "pragma":

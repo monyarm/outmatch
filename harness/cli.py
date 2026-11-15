@@ -244,9 +244,9 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--unit", default="", help="only functions of this unit")
     lp.add_argument("--limit", type=int, default=0, help="functions this run (0 = every candidate)")
     lp.add_argument("--seconds", type=float, default=900, help="budget per function")
-    lp.add_argument("--phases", default="levers,pragma,permuter",
-                    help="comma-separated phases ('all' = levers,pragma,permuter,flags); flags sweeps the unit and "
-                         "applies only a clean winning set")
+    lp.add_argument("--phases", default="msvc,levers,pragma,permuter",
+                    help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags); flags sweeps the unit "
+                         "and applies only a clean winning set")
     lp.add_argument("--jobs", type=int, default=common.JOBS)
     lp.add_argument("--count", type=int, default=64, help="permuter variants per batch")
     lp.add_argument("--seed", type=int, default=0)
