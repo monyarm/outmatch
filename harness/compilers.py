@@ -1,8 +1,9 @@
-"""Which MSVC version built this function: 6.0, 7.0 or 7.1.
+"""Which MSVC build built this function: every installed one, VC6 RTM to 2005 SP1.
 
-The exe came from build 8943, a beta-era 13.00 compiler that was never published, so the closest versions
-available sit either side of it (12.00.8168 = 6.0, and the 13.00 line = 7.0/7.1).  A function can therefore be
-100% under one version and 90% under another for reasons that have nothing to do with its C.
+The exe's own code came from build 8943 (VC6 + Processor Pack: a 13.00 back end on VC6's 12.00 front end), which no
+archive holds; the Processor Packs either side of it (SP4's 8876, SP5's 9044) and every other build that could be found
+are installed as decompdecomp packs or "own copy" kits (README: "The compilers this project has").  A function can be
+100% under one build and 90% under another for reasons that have nothing to do with its C.
 
 `loop` measures this as the `compiler` phase: one compile of the unit under each installed version, scored for
 the function.  Acting on the result is a unit-level change, so it is a separate step:
@@ -22,7 +23,9 @@ from pathlib import Path
 
 from . import common
 
-VERSIONS = ("6.0", "6.3", "6.4", "6.5", "6.5pp", "6.6", "7.0", "7.1", "8.0", "8.0SP1")
+# decompdecomp's own packs; every other build (VC6 service packs, Processor Packs, pre-releases) is an "own copy" kit
+# registered in Setup, added by installed() under the name the app gives it (own-<c2.dll build>)
+VERSIONS = ("6.0", "7.0", "7.1", "8.0", "8.0SP1")
 STATE = common.STATE / "compiler.json"
 
 

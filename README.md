@@ -177,12 +177,15 @@ code that happen to equal MFC/ATL members: coincidences, never set aside.
 
 ## Which compiler built the unit
 
-The exe's Rich header says the game's C++ was built by build 8943: Visual C++ 6.0 with the **Processor Pack**, whose
-back end (`C2.DLL`) is a 13.00 file version behind VC6's 12.00 front end. Build 8943 itself (the pack's first, SP4
-era) is in no public archive. The nearest held one is decomp.me's `6.5pp` (SP5 + Processor Pack, `C2.DLL`
-13.00.9044). A `return true` compiled to `xor eax, eax; inc eax` rather than `push 1; pop eax` is that back end; plain
-`6.0` (12.00.8168) cannot produce it, which is why some functions only matched under `7.0`/`7.1` before the
-Processor Pack compilers were installed. `compiler` sweeps every version `installed()` finds (see the next section).
+The exe's Rich header lists the builds that made it: 161 C++ objects at **8943** (Visual C++ 6.0 with the **Processor
+Pack**, whose back end `C2.DLL` is a 13.00 file version behind VC6's 12.00 front end), 126 C + 8 C++ at 8797 (the
+static CRT, VC6 SP4's libraries), 36 C at 8168 (VC6 RTM: decompdecomp's `6.0`) and one C object at 8830 (a VS2002
+pre-release). Build 8943 itself is in no public archive; the Processor Packs on either side of it are (SP4's 8876,
+SP5's 9044). A `return true` compiled to `xor eax, eax; inc eax` rather than `push 1; pop eax` is the Processor Pack
+back end; plain `6.0` cannot produce it.
+
+The project's default is the SP5 Processor Pack (`own-13.0.9044`, `MSVC_VERSION` in `tools/configure.py`); files
+whose matched functions need another build are pinned in `config/casefile1/file_compilers.json`.
 
 ```
 tools/outmatch/outmatch.sh compiler --symbol '@func_00413AE5@4'          # per-function sweep, report only
@@ -191,71 +194,72 @@ tools/outmatch/outmatch.sh compiler --symbol SYM --apply                # pin fi
 ```
 
 `--apply` refuses when the version would regress a function the unit already matches, and prints `needs_split` with
-the list of functions that would be lost — that is the signal to divide the unit (the app's `split_unit` keeps the
-compiler setting per file). The `compiler` phase of `loop` reports the sweep for every candidate it visits so the
-choice is recorded even when nothing is applied.
+the list of functions that would be lost. The app has no per-function compiler: a file has one, and the app's own
+switch (Settings, `/api/compiler`) keeps a file's new compiler only when every function that matched still matches.
+So a function that matches only under another build than its file's neighbours has to move into a file of its own,
+pinned to that build (see "Flags, and splitting a function out"; the 2026-11-15 splits moved 38 functions this way).
+The `compiler` phase of `loop` reports the sweep for every candidate it visits.
 
-## Adding the OmniBlade compilers (6.3-6.6, 6.5pp)
+## The compilers this project has
 
-decompdecomp's Visual C++ pack installs `6.0`, `7.0` and `7.1` only. The other VC6 service packs are published by
-decomp.me's maintainers as Bin+Include tarballs in the
-[OmniBlade/decomp.me `msvcwin9x` release](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (the same
-release decompdecomp takes its 6.0 and 7.1 from; decomp.me also serves them as `ghcr.io/decompme/compilers/win9x/*`):
+As many Visual C++ builds as could be found are installed, from VC6 RTM to 2005 SP1, so the `compiler` phase can try
+each one. **Not all of them are used:** most files build with the default, and a build only gets used by a file when
+something matches with it that matches with nothing closer (the "files" column, as of 2026-11-15).
 
-| version | asset | CL / C1 / C1XX / C2 file versions | sha256 |
-|---|---|---|---|
-| `6.3` (SP3) | `msvc6.3.tar.gz` | 12.00.8168 / 8472 / 8472 / 8447 | `84f73e718b3671bfd5de3b7764622b07633b572ee826ca3b77602d224c128608` |
-| `6.4` (SP4) | `msvc6.4.tar.gz` | 12.00.8804 / 8867 / 8867 / 8799 | `6d4ef930390ca7481ae5b63ea3bf00d62e0993cd95f1d6f42ba06bb30f993c57` |
-| `6.5` (SP5) | `msvc6.5.tar.gz` | 12.00.8804 / 8867 / 8964 / 8966 | `16f639b7961ca74b938532d912d2bb655d5ea08b01dc2f50e4a180774d138169` |
-| `6.5pp` (SP5 + Processor Pack) | `msvc6.5pp.tar.gz` | 12.00.8804 / 8867 / 8964 / **13.00.9044** | `0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e` |
-| `6.6` (SP6) | `msvc6.6.tar.gz` | 12.00.8804 / 9782 / 9782 / 9782 | `0a4cd7628a79067ee62dd90d40d2c027221cc46f530e40d92245ec46d550dd4d` |
+| name in the project | build (`C2.DLL`) | what it is | where it comes from | files |
+|---|---|---|---|---|
+| `6.0` | 12.00.8168 | VC6 RTM | decompdecomp's `msvc` pack | 53 (the CRT tail, units split out for it) |
+| `own-12.0.8447` | 12.00.8447 | VC6 SP3 | OmniBlade `msvc6.3.tar.gz` | 0 |
+| `own-12.0.8799` | 12.00.8799 | VC6 SP4 | OmniBlade `msvc6.4.tar.gz` | 0 |
+| `own-13.0.8876` | 13.00.8876 | VC6 SP4 + Processor Pack | `msvc6.4` + `c2.dll`/intrinsic headers from the SP4 CD's `enu/PP/vcpp.exe` | 0 |
+| `own-12.0.8966` | 12.00.8966 | VC6 SP5 | OmniBlade `msvc6.5.tar.gz` | 0 |
+| **`own-13.0.9044`** | 13.00.9044 | VC6 SP5 + Processor Pack (decomp.me `msvc6.5pp`) | OmniBlade `msvc6.5pp.tar.gz` | **default** |
+| `own-12.0.9782` | 12.00.9782 | VC6 SP6 | OmniBlade `msvc6.6.tar.gz` | 0 |
+| `7.0` | 13.00.9466 | .NET 2002 | decompdecomp's `msvc` pack | 1 |
+| `7.1` | 13.10.3077 | .NET 2003 | decompdecomp's `msvc` pack | 0 |
+| `8.0`, `8.0SP1` | 14.00.50727 | 2005 RTM, SP1 | decompdecomp's `msvc2005` pack | 0 |
 
-**Install one locally.** Extract it as its own version folder beside the ones decompdecomp installed:
+Not held: the 8943 Processor Pack itself, and the 8830 pre-release (earlier than VS.NET Beta 1's 13.00.9030; nothing on
+archive.org). OmniBlade's tarballs are the
+[`msvcwin9x` release](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (decomp.me serves the same as
+`ghcr.io/decompme/compilers/win9x/*`); their sha256s:
+
+| asset | CL / C1 / C1XX / C2 | sha256 |
+|---|---|---|
+| `msvc6.3.tar.gz` | 12.00.8168 / 8472 / 8472 / 8447 | `84f73e718b3671bfd5de3b7764622b07633b572ee826ca3b77602d224c128608` |
+| `msvc6.4.tar.gz` | 12.00.8804 / 8867 / 8867 / 8799 | `6d4ef930390ca7481ae5b63ea3bf00d62e0993cd95f1d6f42ba06bb30f993c57` |
+| `msvc6.5.tar.gz` | 12.00.8804 / 8867 / 8964 / 8966 | `16f639b7961ca74b938532d912d2bb655d5ea08b01dc2f50e4a180774d138169` |
+| `msvc6.5pp.tar.gz` | 12.00.8804 / 8867 / 8964 / **13.00.9044** | `0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e` |
+| `msvc6.6.tar.gz` | 12.00.8804 / 9782 / 9782 / 9782 | `0a4cd7628a79067ee62dd90d40d2c027221cc46f530e40d92245ec46d550dd4d` |
+
+The SP4 Processor Pack's `c2.dll` (sha256 `1d5c354bfd6e4445e5e2c3df7f108f710b14a9e37ea86d269a7fc49cfe362c93`) is on the
+archive.org item `microsoft-visual-studio-6-sp4-x05-78387-x05-78367d1-2000-microsoft-cd` (a zip of `vs6sp4.mdf`: raw
+2352-byte sectors, keep bytes 16-2064 of each for a plain ISO), inside `enu/PP/vcpp.exe`; its `xmmint_1.h`/`emmint_1.h`
+install as `xmmintrin.h`/`emmintrin.h` (`vcpp.inf`).
+
+**Adding one.** Unpack it so `Bin/CL.EXE`, `Bin/c2.dll` and `Include/` sit in one folder (here
+`~/.local/share/decompnet/toolchains/msvc/<name>`), then register it as a "Microsoft Visual C++ (your own copy)" kit:
+Setup > Compilers & tools, or `POST /api/toolchain {"id": "visualcpp", "folder": "<folder>", "accept_license": true}`.
+decompdecomp names it `own-<C2.DLL build>` and lists it in Settings, where the per-file and whole-game compiler switches
+accept it; the harness finds the same names (`common.own_compilers`, `compilers.installed`).
+
+**After adding a kit, regenerate `build.ninja` once.** The app writes the kits into `build.ninja`'s `configure` rule
+(`--own`) only when it sets the project up, so a kit added later is unknown to the build: every file switched to it
+fails to build and the switch keeps the old compiler. Run configure with the app's arguments once:
 
 ```sh
-v=6.5pp
-mkdir -p ~/.local/share/decompnet/toolchains/msvc/$v
-curl -L https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc$v.tar.gz \
-  | tar xz -C ~/.local/share/decompnet/toolchains/msvc/$v          # gives $v/Bin/CL.EXE, $v/Include, ...
+PY=~/.cache/decompdecomp-nix/1.0.10-alpha.1/venv/bin/python
+eval "$PY tools/configure.py casefile1 $($PY -c 'import shlex; from decompnet.consoles.pc import scratch; print(shlex.join(scratch.tool_args(("visualcpp",))))')"
+grep -c -- --own build.ninja      # > 0
 ```
 
-Then pin a file to it like any other version: `"src/auto/text_00413AE5.cpp": "6.5pp"` in
-`config/casefile1/file_compilers.json` (or the app's per-file compiler setting / `set_file_compiler`), or make it the
-project's default in the app's Settings.
+**New units need their target objects.** The app's build runs `ninja all_source`, which compiles but never delinks; a
+unit added by hand (a split) has no `build/casefile1/target/*.obj` until `tools/delink.py config/casefile1/functions.json
+build/casefile1/target` runs, and `/api/fork/check` fails with "Failed to open .../target/<unit>.obj" until then.
 
-**Why the app picks it up.** decompdecomp gives `tools/configure.py` every installed pack folder as `--msvc`
-(`scratch.tool_args`: `toolchains/msvc` and `toolchains/msvc2005`), and `configure.py`'s `msvc(version)` takes the
-first `<folder>/<version>/Bin/CL.EXE`. Nothing checks the version name against a list, so a folder is all it takes;
-`/api/try` judges with it like any other. The harness looks the same way (`common.cl_exe`), so `8.0`/`8.0SP1` from
-`msvc2005` are swept too.
-
-**Measured on this game (2026-11-15, every unit under every version):** exact functions with the whole project on one
-version: `6.0` 1926, `6.3` 1926, `6.4`/`6.5`/`6.6` 1913, **`6.5pp` 1995**, `7.0` 1105, `7.1` 1066, `8.0` 1023.
-`6.5pp` as the default with 27 files pinned elsewhere (25 to `6.0`, mostly the CRT tail; one `7.0`) gives 2089.
-The SP4 Processor Pack (`c2.dll` 13.00.8876, `enu/PP/vcpp.exe` on the archive.org "Microsoft Visual Studio 6 SP4"
-CD) brackets build 8943 from below but never beats `6.5pp`: it loses three functions and gains none.
-
-**The app's own route for a version it doesn't ship** is a "Microsoft Visual C++ (your own copy)" kit (Setup >
-Compilers & tools, or `POST /api/toolchain {"id": "visualcpp", "folder": ...}`): decompdecomp reads the copy's
-`c2.dll` version and names it `own-<build>` (`own-13.00.9044` for 6.5pp), passes it to `configure.py` as `--own`, and
-lists it in Settings, where the per-file and whole-game compiler switches (which keep only files whose matches hold)
-accept it. A plain folder under `toolchains/msvc` builds and judges, but Settings and `set_file_compiler` refuse a
-version outside `MSVC_VERSIONS`, so pins to it can only be written into `file_compilers.json` by hand.
-
-**Caveats.** The folder is not part of decompdecomp's pack: reinstalling the pack in Setup can remove it, and every
-machine that builds or judges this project needs it too (a file pinned to a missing version fails `configure.py`
-with "Visual C++ 6.5pp isn't in ..."). The durable fix is to add the archives to decompdecomp's
-`src/decompnet/toolchains.toml`, next to its existing 6.0 entry:
-
-```toml
-[[msvc.parts]]
-url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.5pp.tar.gz"
-sha256 = "0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e"
-into = "6.5pp"
-```
-
-(one stanza per version, with the sha256 from the table), plus `"MSVC/6.5pp"` etc. in `consoles/pc/__init__.py`'s
-`MSVC_VERSIONS` so Settings offers them.
+**Durable fix upstream.** The kits live on this machine only. decompdecomp could ship them: `[[msvc.parts]]` entries
+in `src/decompnet/toolchains.toml` (url, sha256, `into`) plus their names in `consoles/pc/__init__.py`'s
+`MSVC_VERSIONS`, and a reconfigure when a kit is added.
 
 ## Drafts for functions with no C at all
 
