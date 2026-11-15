@@ -282,47 +282,59 @@ def _body(fn: dict, definition: str | None) -> str:
     return definition if definition is not None else (text[start:end] if start >= 0 else "")
 
 
-def ascend(fn: dict, only: str = "", cap: int = 160, jobs: int = common.JOBS, depth: int = 3,
+def ascend(fn: dict, only: str = "", cap: int = 160, jobs: int = common.JOBS, depth: int = 3, beam: int = 1,
           submit_match: bool = True, apply_best: bool = False, definition: str | None = None) -> dict:
-    """Hill-climb the catalogue: the best single trick, then the catalogue again *on that body*, up to `depth` steps.
+    """Chain the catalogue: from each surviving body, one pass per step, up to `depth` steps.
 
-    A single pass only ever applies one edit, but real functions often need two that only pay off together (an
-    argument swap plus a rename, a decl reorder plus a type change). Each step re-enumerates from the improved body,
-    so independent fixes stack; `depth` bounds the work at `depth` catalogue passes per function.
+    `beam` is how many bodies survive a generation - 1 is the greedy hill-climb, more keeps the equally-good ones so
+    two edits that only pay off together have a chance to meet. A *tie* is allowed to continue the chain: it costs a
+    pass and is often where the next lever starts (a rename that changes nothing yet makes the swap legal).
     """
     symbol = fn["name"]
     base = _body(fn, definition)
     if not base:
         return {"symbol": symbol, "variants": 0, "best_pct": None, "error": f"no definition in src/auto/{fn['unit']}.cpp"}
-    current, trail, seen, total = base, [], {base}, 0
-    best_pct, best_label = None, None
+    frontier, seen, trail, total = [base], {base}, [], 0
+    best_pct, best_label, best_body = None, None, base
     matched, submitted = False, {}
     for _ in range(max(1, depth)):
-        cands = [c for c in variants(current, only=only, cap=cap) if c[1] not in seen]
+        cands = []
+        for body in frontier:
+            for label, text, _ in variants(body, only=only, cap=cap):
+                if text in seen:
+                    continue
+                seen.add(text)
+                cands.append((label, text, ""))
         if not cands:
             break
-        res = search.judge(fn, cands, jobs=jobs, submit_match=submit_match, write_best=False, current=current)
+        res = search.judge(fn, cands, jobs=jobs, submit_match=submit_match, write_best=False)
         total += res.get("variants") or 0
-        matched, submitted = bool(res.get("matched")), res.get("submitted") or submitted
-        best_pct, best_label = res.get("best_pct"), res.get("best_label")
+        matched = matched or bool(res.get("matched"))
+        submitted = res.get("submitted") or submitted
         if matched:
+            best_body = cands[0][1] if cands else base
             break
-        rows = res.get("rows") or []
-        pick = max(range(len(rows)), key=lambda i: rows[i]["pct"] if rows[i]["pct"] is not None else -1)
-        floor = float(res.get("base_pct") or 0.0)
-        if pick >= len(cands) or rows[pick].get("pct") is None or rows[pick]["pct"] <= floor + 1e-6:
+        scored = []
+        for i, row in enumerate(res.get("rows") or []):
+            if i < len(cands) and row.get("pct") is not None:
+                scored.append((float(row["pct"]), cands[i][1], cands[i][0]))
+        if not scored:
             break
-        label, text = cands[pick][0], cands[pick][1]
-        if text in seen:
+        scored.sort(key=lambda t: -t[0])
+        if best_pct is None or scored[0][0] > best_pct + 1e-6:
+            best_pct, best_body, best_label = scored[0]
+        trail.append({"label": scored[0][2], "pct": scored[0][0]})
+        # survive: the best `beam` bodies that are at least as good as the best seen so far (a tie may continue)
+        top = [s for s in scored[:max(beam, 1)] if s[0] >= best_pct - 1e-6]
+        if not top:
             break
-        seen.add(text)
-        current = text
-        trail.append({"label": label, "pct": rows[pick]["pct"]})
+        frontier = [s[1] for s in top]
     out = {"symbol": symbol, "unit": fn["unit"], "variants": total, "best_pct": best_pct, "best_label": best_label,
-           "steps": trail, "depth": len(trail), "matched": matched, "submitted": submitted, "definition": current}
+           "steps": trail, "depth": len(trail), "beam": beam, "matched": matched, "submitted": submitted,
+           "definition": best_body}
     if not matched and apply_best and best_pct is not None and best_pct > search.db_best_pct(fn) + 1e-6:
         try:
-            helpers, body = search.csource.split_extra(current)
+            helpers, body = search.csource.split_extra(best_body)
             out["won"] = search.submit(symbol, body, helpers, fn=fn, improve=True)
         except common.OutmatchError as e:
             out["note"] = str(e)[:300]

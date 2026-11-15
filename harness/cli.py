@@ -114,7 +114,7 @@ def cmd_msvc(args) -> int:
     fn = _function(args.name)
     definition = Path(args.file).read_text(encoding="utf-8") if args.file else None
     if args.depth > 1:
-        out = tricks.ascend(fn, only=args.only, cap=args.cap, jobs=args.jobs, depth=args.depth,
+        out = tricks.ascend(fn, only=args.only, cap=args.cap, jobs=args.jobs, depth=args.depth, beam=args.beam,
                             submit_match=not args.no_submit, apply_best=args.apply, definition=definition)
         for step in out.get("steps") or []:
             print(f"{step['pct']:8.3f}  {step['label']}")
@@ -155,7 +155,7 @@ def cmd_loop(args) -> int:
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
                         again=args.again, forever=args.forever, idle=args.idle, phases=phases,
                         any_permuted=args.any, min_pct=args.min_pct, order=args.order,
-                        apply_best=args.apply_improvements, depth=args.depth)
+                        apply_best=args.apply_improvements, depth=args.depth, beam=args.beam)
     _say({**out, "queued": len(todo)})
     return 0
 
@@ -271,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--phases", default="msvc,levers,pragma,permuter",
                     help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags); flags sweeps the unit "
                          "and applies only a clean winning set")
+    lp.add_argument("--beam", type=int, default=1, help="bodies kept per generation (1 = greedy)")
     lp.add_argument("--depth", type=int, default=1,
                     help="msvc phase: catalogue passes per function, each from the previous best body")
     lp.add_argument("--jobs", type=int, default=common.JOBS)
@@ -347,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
          "stmt-order"]))
     mv.add_argument("--file", default="", help="base the catalogue on this definition instead of the unit's")
     mv.add_argument("--cap", type=int, default=160, help="maximum variants to score")
+    mv.add_argument("--beam", type=int, default=1, help="bodies kept per generation (1 = greedy)")
     mv.add_argument("--depth", type=int, default=1,
                     help="catalogue passes, each starting from the previous best body (2+ chains tricks)")
     mv.add_argument("--jobs", type=int, default=common.JOBS)
