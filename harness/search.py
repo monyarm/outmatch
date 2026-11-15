@@ -224,8 +224,14 @@ class Outcome:
 
 
 def db_best_pct(fn: dict) -> float:
-    """The app's current best for a function, as objdiff percentage (score is out of n_insns * 100)."""
-    return 100.0 - 100.0 * float(fn.get("score") or 0) / (100.0 * max(int(fn.get("n_insns") or 1), 1))
+    """The app's current best for a function, as objdiff percentage (score is out of n_insns * 100).
+
+    A function with no draft has no best at all, so -1: otherwise `--apply-improvements` would read the missing score
+    as 0 and call 100% the bar to beat, refusing the first draft forever.
+    """
+    if fn.get("score") is None:
+        return -1.0
+    return 100.0 - 100.0 * float(fn["score"]) / (100.0 * max(int(fn.get("n_insns") or 1), 1))
 
 
 def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int = 64,

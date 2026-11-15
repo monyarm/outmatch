@@ -353,3 +353,22 @@ def best_of(symbol: str) -> tuple[float, str | None]:
 def definition_span(source_text: str, symbol: str, name_hint: str | None = None):
     from . import csource
     return csource.find(source_text, [name_hint] if name_hint else [], symbol)
+
+
+def draftless(min_size: int = 0, limit: int | None = None, exclude_claims: bool = True) -> list[dict]:
+    """Open functions with no C at all, biggest first - what a first draft would unlock."""
+    sql = ("SELECT id,name,unit,n_insns,size,attempts,meta FROM functions "
+           "WHERE project_id=? AND status='open' AND best_source IS NULL AND size>=?")
+    args: list = [project_id(), int(min_size)]
+    if exclude_claims:
+        sql += " AND id NOT IN (SELECT function_id FROM claims)"
+    sql += " ORDER BY size DESC"
+    if limit:
+        sql += f" LIMIT {int(limit)}"
+    out = []
+    for fid, name, unit, n_insns, size, attempts, meta in query(sql, *args):
+        meta = json.loads(meta) if meta else {}
+        out.append({"id": fid, "name": name, "unit": unit or Path(meta.get("source", "")).stem,
+                    "n_insns": n_insns, "size": size, "score": None, "source": None,
+                    "attempts": attempts, "meta": meta})
+    return out

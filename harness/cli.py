@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
-from . import common, csource, search
+from . import common, draft, csource, search
 
 
 def _say(obj: dict) -> None:
@@ -134,6 +135,26 @@ def cmd_loop(args) -> int:
     return 0
 
 
+
+def cmd_draft(args) -> int:
+    todo = common.draftless(min_size=args.min_size, limit=args.limit or (0 if args.symbol else 0))
+    if args.symbol:
+        todo = [fn for fn in todo if fn["name"] == args.symbol] or [
+            fn for fn in common.draftless(min_size=0) if fn["name"] == args.symbol]
+    out = Path(args.out)
+    if args.write:
+        out.mkdir(parents=True, exist_ok=True)
+    for fn in todo:
+        text = draft.packet(fn)
+        path = out / (fn["name"].replace("@", "_").replace("?", "_") + ".md")
+        if args.write:
+            path.write_text(text, encoding="utf-8")
+        print(json.dumps({"symbol": fn["name"], "unit": fn["unit"], "size": fn["size"],
+                          "attempts": fn.get("attempts"), "file": str(path) if args.write else None}))
+        if args.print and not args.write:
+            print(text)
+    return 0
+
 def cmd_report(args) -> int:
     from . import loopmode
     ledger = loopmode.Ledger()
@@ -222,6 +243,14 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--dry-run", action="store_true", help="print the queue and exit")
     lp.set_defaults(func=cmd_loop)
 
+    dr = sub.add_parser("draft", help="first-draft packets for functions with no C at all")
+    dr.add_argument("--symbol", default="", help="one function instead of the queue")
+    dr.add_argument("--limit", type=int, default=0)
+    dr.add_argument("--min-size", type=int, default=0)
+    dr.add_argument("--out", default=str(Path(common.STATE) / "drafts"))
+    dr.add_argument("--write", action="store_true", help="save the packets")
+    dr.add_argument("--print", action="store_true", help="print each packet")
+    dr.set_defaults(func=cmd_draft)
     rp = sub.add_parser("report", help="what the loop has tried (summary, or one function's history)")
     rp.add_argument("symbol", nargs="?", default="")
     rp.add_argument("--limit", type=int, default=40)

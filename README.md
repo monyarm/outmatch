@@ -40,6 +40,7 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 | `levers NAME [--only id,id]` | mechanical CMR2Decomp/brickpark source idioms (`if-else-swap`, `ternary-to-if`, `and-or-swap`, `compound-split`, `assign-to-compound`, `postinc`, `chain-assign`, `decl-hoist`) |
 | `submit NAME FILE` | send a saved variant (e.g. from `.outmatch/best/`) through `/api/try` |
 | `libmatch [--libs DIR] [--write] [--range-from HEX]` | match the project's functions against the VC6 static libraries' own objects (masked-relocation signatures), then `--write` records them in `set_aside.json` with the library, object and symbol as the reason, and adds their names |
+| `draft [--limit N] [--min-size B] [--symbol NAME] [--out DIR] [--print] [--write]` | functions with no C at all, biggest first: writes a packet per function (disassembly, Ghidra pseudocode, unit declarations, callees) to paste into a model; test the result with `try` |
 
 | `status` | DB status counts plus the app's `/api/state` |
 | `release NAME` | give a claim back |
@@ -152,6 +153,23 @@ The libraries are not committed (43 MB, and Microsoft's): take `vc_studio/main/V
 `/tmp/opencode/vs60/vc_studio/main/VC98/Lib`). This project's original compiler is cl 12.00.8943 (VC6 Processor
 Pack, from the PE's Rich header); the archive's library build is 12.00.9044, which is why the big formatting/startup
 routines match exactly but the `_malloc` family and `mainCRTStartup` do not.
+
+## Drafts for functions with no C at all
+
+About a quarter of the game's bytes are in functions that have never had a single line of C written - the permuter
+and `loop` cannot touch them, because both need a draft to start from. `draft` turns one into a work packet:
+
+```
+tools/outmatch/outmatch.sh draft --limit 5 --min-size 1024 --write   # .outmatch/drafts/<symbol>.md
+tools/outmatch/outmatch.sh draft --symbol '@func_0042BD7C@16' --print
+```
+
+A packet holds the symbol, unit, address, size, instruction count and calling convention; the delinked target's
+disassembly; the Ghidra pseudocode for that address; the unit's includes and class/struct declarations; and the
+function's calls and data references with any names the project knows. Write the C from that, then
+`tools/outmatch/outmatch.sh try SYMBOL draft.c` - it compiles the draft in the function's own unit and prints the
+percentage. A first draft that compiles and beats the (nonexistent) best can be pushed through the app with `try
+--submit` or `loop --apply-improvements`, after which the app's permuter can take it from there.
 
 ## Skills
 
