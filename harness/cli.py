@@ -104,6 +104,23 @@ def cmd_levers(args) -> int:
     return 0
 
 
+def cmd_msvc(args) -> int:
+    """Try the MSVC6 trick catalogue (the skill's symptom->lever table) on one function."""
+    from . import tricks
+    if args.list:
+        for name, _ in tricks.GROUPS:
+            print(name)
+        return 0
+    fn = _function(args.name)
+    definition = Path(args.file).read_text(encoding="utf-8") if args.file else None
+    out = tricks.run(fn, only=args.only, cap=args.cap, jobs=args.jobs, submit_match=not args.no_submit,
+                     apply_best=args.apply, definition=definition)
+    for row in sorted(out.get("rows") or [], key=lambda r: r["pct"], reverse=True):
+        print(f"{row['pct']:8.3f}  {row['label']}" + (f"  ({row['error']})" if row.get("error") else ""))
+    _say({k: v for k, v in out.items() if k != "rows"})
+    return 0 if out.get("matched") else 1
+
+
 def cmd_loop(args) -> int:
     """Work the queue without naming functions: levers, pragmas and the permuter, in that order."""
     from . import loopmode
@@ -290,6 +307,19 @@ def main(argv: list[str] | None = None) -> int:
     lv.add_argument("--jobs", type=int, default=common.JOBS)
     lv.add_argument("--no-submit", action="store_true")
     lv.set_defaults(func=cmd_levers)
+
+    mv = sub.add_parser("msvc", help="try the MSVC6 trick catalogue (the skill's levers) on one function")
+    mv.add_argument("name", nargs="?", default="")
+    mv.add_argument("--only", default="", help="comma-separated groups: " + ",".join(
+        ["args", "rename", "decl-order", "condition", "ternary", "return", "init", "zero-init", "volatile", "type",
+         "stmt-order"]))
+    mv.add_argument("--file", default="", help="base the catalogue on this definition instead of the unit's")
+    mv.add_argument("--cap", type=int, default=160, help="maximum variants to score")
+    mv.add_argument("--jobs", type=int, default=common.JOBS)
+    mv.add_argument("--apply", action="store_true", help="submit the best variant even if it is not 100 yet")
+    mv.add_argument("--no-submit", action="store_true")
+    mv.add_argument("--list", action="store_true", help="print the trick groups and exit")
+    mv.set_defaults(func=cmd_msvc)
 
     args = p.parse_args(argv)
     return args.func(args)
