@@ -72,8 +72,14 @@ def find(text: str, hints: list[str] | None, symbol: str | None = None) -> tuple
                 if c == ";":
                     i = -1
                     break
-                if masked.startswith("const", i) or masked.startswith("volatile", i) or masked.startswith("throw", i):
+                if masked.startswith("const", i) or masked.startswith("volatile", i):
                     i += 6
+                    continue
+                if masked.startswith("throw", i):  # `throw()` before a body, not just `throw();` after a prototype
+                    j = i + 5
+                    while j < len(masked) and masked[j] in " \t\r\n":
+                        j += 1
+                    i = _skip_parens(masked, j) if j < len(masked) and masked[j] == "(" else j
                     continue
                 if masked.startswith("noexcept", i) or masked.startswith("__declspec", i):
                     j = masked.find("(", i)
