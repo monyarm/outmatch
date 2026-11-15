@@ -9,7 +9,10 @@ offset/type list identifies it.  A signature that occurs once in the library is 
 signature that occurs several times is only accepted when every copy has the same symbol name
 (LIBCMT and LIBCPMT both carry some of the same bits) and the function is not tiny.
 
-    python -m harness.libmatch [--libs DIR] [--write] [--verbose]
+    python -m harness.libmatch [--libs [BUILD=]DIR ...] [--only all|A.LIB,B.LIB] [--write] [--verbose]
+
+Several --libs (one per Visual C++ build: 8168=.../msvc-6.00-8168/LIB, ...) are indexed together; a function
+every build carries unchanged counts once, and its hit lists the builds that have it.
 
 --write merges the hits into config/casefile1/set_aside.json (symbol -> reason) and adds the real
 library names to functions.json's "names".  Nothing is measured until the app syncs; decompdecomp
@@ -95,31 +98,34 @@ def signature(size: int, data: bytes, relocs):
     return size, bytes(masked), tuple(relocs)
 
 
-def library_index(lib_dir: Path, names):
-    """signature -> [(lib, member, symbol)], over every object of the libraries that exist."""
+def library_files(lib_dir: Path, names):
+    """(name, path) of each library in `lib_dir` (any case), or every .lib there for names == ["all"]."""
+    found = {p.name.upper(): p for p in lib_dir.iterdir() if p.suffix.lower() == ".lib"} if lib_dir.is_dir() else {}
+    return sorted(found.items()) if names == ["all"] else [(n.upper(), found[n.upper()]) for n in names
+                                                           if n.upper() in found]
+
+
+def library_index(lib_dirs, names):
+    """signature -> [(build, lib, member, symbol)], over every object of the libraries that exist."""
     index = defaultdict(list)
     files = 0
-    skipped: list[str] = []
-    for lib in names:
-        path = lib_dir / lib
-        if not path.is_file():
-            continue
-        try:
-            members = archive(path)
-        except ValueError:
-            skipped.append(lib)  # OMF or an import library's stub, not MS COFF
-            continue
-        files += 1
-        for member, data in members:
-            if not member.lower().endswith(".obj"):
-                continue
+    for build, lib_dir in lib_dirs:
+        for lib, path in library_files(Path(lib_dir), names):
             try:
-                functions = object_functions(data)
-            except Exception:
-                continue
-            for function in functions:
-                index[signature(function["size"], function["data"], function["relocs"])].append(
-                    (lib, member, function["name"]))
+                members = archive(path)
+            except ValueError:
+                continue  # OMF or an import library's stub, not MS COFF
+            files += 1
+            for member, data in members:
+                if not member.lower().endswith(".obj"):
+                    continue
+                try:
+                    functions = object_functions(data)
+                except Exception:
+                    continue
+                for function in functions:
+                    index[signature(function["size"], function["data"], function["relocs"])].append(
+                        (build, lib, member_name(member), function["name"]))
     return index, files
 
 
@@ -161,8 +167,10 @@ def member_name(member: str) -> str:
     return re.split(r"[\\/]", member)[-1]
 
 
-def scan(lib_dir: Path = LIB_DIR_DEFAULT, libs=DEFAULT_LIBS):
-    index, files = library_index(lib_dir, libs)
+def scan(lib_dirs=(("SP5", LIB_DIR_DEFAULT),), libs=DEFAULT_LIBS):
+    index, files = library_index(lib_dirs, libs)
+    lib_order = {lib.upper(): i for i, lib in enumerate(libs)}
+    build_order = {build: i for i, (build, _) in enumerate(lib_dirs)}
     targets = list(target_functions())
     shared = defaultdict(list)  # a signature two target functions share is a common body, not a library function
     for unit, entry, function in targets:
@@ -170,9 +178,17 @@ def scan(lib_dir: Path = LIB_DIR_DEFAULT, libs=DEFAULT_LIBS):
     hits, ambiguous = [], []
     for unit, entry, function in targets:
         sig = signature(function["size"], function["data"], function["relocs"])
-        found = index.get(sig)
-        if not found:
+        carried = index.get(sig)
+        if not carried:
             continue
+        # the same object (member) in several builds' or libraries' copies is one candidate, not a duplicate, even
+        # where a build renamed its symbol (exception -> std::exception) or LIBC's _toupper is LIBCMT's
+        # __toupper_lk; the copy reported is the first library in --only, then the first build in --libs
+        first = {}
+        for _, lib, member, sym in sorted(carried, key=lambda c: (lib_order.get(c[1], len(lib_order)),
+                                                                   build_order.get(c[0], len(build_order)))):
+            first.setdefault(member.lower(), (lib, member, sym))
+        found = list(first.values())
         symbols = {sym for _, _, sym in found}
         unique = len(found) == 1
         if len(shared[sig]) > 1:
@@ -189,7 +205,8 @@ def scan(lib_dir: Path = LIB_DIR_DEFAULT, libs=DEFAULT_LIBS):
             continue
         lib, member, symbol = found[0]
         hits.append({"unit": unit, "addr": entry["addr"], "name": entry["name"], "size": function["size"],
-                     "lib": lib, "member": member_name(member), "symbol": symbol,
+                     "lib": lib, "member": member, "symbol": symbol,
+                     "builds": sorted({b for b, *_ in carried}),
                      "confidence": "unique" if unique else "same-symbol"})
     return hits, ambiguous, files, len(index)
 
@@ -226,7 +243,9 @@ def write(hits, range_from: int | None = None) -> dict:
         new = clean(hit["symbol"])
         # what an older version of this tool wrote (it stripped every leading underscore)
         old = re.sub(r"@\d+$", "", hit["symbol"].lstrip("_")) or hit["symbol"]
-        if key not in names or names[key] == old:  # a name the project gave it wins
+        if "$$$" in hit["symbol"]:  # an assembler-local label, not a name
+            pass
+        elif key not in names or names[key] == old:  # a name the project gave it wins
             if new not in {v for k, v in names.items() if k != key}:  # never map two addresses to one name
                 if names.get(key) != new:
                     names[key] = new
@@ -234,8 +253,8 @@ def write(hits, range_from: int | None = None) -> dict:
         if hit["name"] in aside:
             kept += 1
             continue
-        aside[hit["name"]] = (f"MSVC 6.0 static runtime — {hit['lib']} ({hit['member']}): "
-                              f"{hit['symbol']}")
+        aside[hit["name"]] = (f"MSVC static library — {hit['lib']} ({hit['member']}): {hit['symbol']}"
+                              + (f" [builds {', '.join(hit['builds'])}]" if hit.get("builds") else ""))
         added_aside += 1
     start = range_from if range_from is not None else tail_range(hits)
     end = max((fn["addr"] + fn["size"] for unit in info["units"].values() for fn in unit), default=0)
@@ -257,20 +276,28 @@ def write(hits, range_from: int | None = None) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--libs", default=str(LIB_DIR_DEFAULT), help="folder with VC98/LIB")
-    parser.add_argument("--only", default=",".join(DEFAULT_LIBS), help="comma-separated library names")
+    parser.add_argument("--libs", action="append", default=[],
+                        help="[BUILD=]folder with a build's LIB; repeat for several builds (default: VC98 SP5)")
+    parser.add_argument("--only", default=",".join(DEFAULT_LIBS), help="comma-separated library names, or all")
     parser.add_argument("--write", action="store_true", help="update set_aside.json and functions.json")
     parser.add_argument("--range-from", default="", help="hex address the library block at the end starts at")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     libs = [x.strip() for x in args.only.split(",") if x.strip()]
-    hits, ambiguous, files, signatures = scan(Path(args.libs), libs)
+    dirs = [tuple(d.split("=", 1)) if "=" in d else (Path(d).parent.name, d) for d in args.libs] \
+        or [("SP5", str(LIB_DIR_DEFAULT))]
+    hits, ambiguous, files, signatures = scan(dirs, libs)
+    by_lib, by_build = defaultdict(int), defaultdict(int)
+    for h in hits:
+        by_lib[h["lib"]] += 1
+        for b in h["builds"]:
+            by_build[b] += 1
     print(json.dumps({"libraries": files, "signatures": signatures, "hits": len(hits),
-                      "ambiguous": len(ambiguous),
-                      "by_lib": {lib: sum(1 for h in hits if h["lib"] == lib) for lib in libs}}, indent=None))
+                      "ambiguous": len(ambiguous), "by_lib": by_lib, "by_build": by_build}, indent=None))
     if args.verbose:
         for hit in sorted(hits, key=lambda h: h["addr"]):
-            print(f"0x{hit['addr']:08X} {hit['size']:5d} {hit['name']:<24} <- {hit['lib']}:{hit['member']}:{hit['symbol']}")
+            print(f"0x{hit['addr']:08X} {hit['size']:5d} {hit['name']:<24} <- {hit['lib']}:{hit['member']}:{hit['symbol']}"
+                  f" {','.join(hit['builds'])}")
     out = common.STATE / "libmatch.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"hits": hits, "ambiguous": ambiguous}, indent=1))
