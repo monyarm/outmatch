@@ -145,25 +145,44 @@ same library build, so a signature match is byte identity in everything the link
   compiler-generated bodies (`??_G...` scalar-deleting destructors, tiny stubs) coincide across unrelated code. The
   scan reports those under `ambiguous` rather than guessing.
 - `--write` adds a `set_aside.json` entry per proven function naming the evidence, e.g.
-  `"@func_00451E2B@12": "MSVC 6.0 static runtime — LIBCMT.LIB (stdexcpt.obj): ??0exception@@QAE@ABQBD@Z"`, plus one
+  `"@func_00451E2B@12": "MSVC static library — LIBCMT.LIB (stdexcpt.obj): ??0exception@@QAE@ABQBD@Z [builds 8168, 8447, 8797, ...]"`, plus one
   `ranges` entry for the whole CRT tail (`0x44E690-0x4595C6`), because the rest of that block is the same library
   compiled by a slightly different build and does not always match byte for byte. It also fills in the function names
   the library gives (`_onexit`, `_nh_malloc`, `RtlUnwind`, …) in `functions.json`'s `names`.
 - Set-aside functions leave the progress denominator (`matched / (total - set aside)`) and are marked not-C; the
   rebuild already takes their bytes from your copy of the game, so nothing about the built program changes.
 
-The libraries are not committed (43 MB, and Microsoft's): take `vc_studio/main/VC98/Lib` from the archive.org item
-`visual-studio-6-0-sp5-portable` ("Visual Studio 6.0 SP5+PP5 portable") and point `--libs` at it (default
-`/tmp/opencode/vs60/vc_studio/main/VC98/Lib`). This project's original compiler is cl 12.00.8943 (VC6 Processor
-Pack, from the PE's Rich header); the archive's library build is 12.00.9044, which is why the big formatting/startup
-routines match exactly but the `_malloc` family and `mainCRTStartup` do not.
+The libraries are not committed (Microsoft's). Several builds can be indexed at once, one `--libs BUILD=DIR` each;
+the same object in several builds (or in both `LIBC.LIB` and `LIBCMT.LIB`) counts once, reported from the first
+library in `--only` and the first build in `--libs`, and each hit lists the builds that carry it:
+
+```sh
+python -m harness.libmatch --only LIBCMT.LIB,LIBCPMT.LIB,OLDNAMES.LIB,LIBC.LIB,LIBCP.LIB \
+  --libs 8797=<sp4>/enu/vc98/lib --libs 8966=<nolf>/msvc-6.00-8966/LIB --libs 8447=<nolf>/msvc-6.00-8447/LIB \
+  --libs 9782=<nolf>/msvc-6.00-9782/VC98/Lib --libs 8168=<nolf>/msvc-6.00-8168/LIB [--write]
+```
+
+Where each build's libraries come from:
+
+| build | what | source |
+|---|---|---|
+| 8797 | **VC6 SP4 — the game's CRT build** (Rich header: 126 C + 8 C++ objects at 8797; the `@comp.id` of `libcmt.lib`'s objects says 8797) | archive.org `microsoft-visual-studio-6-sp4-x05-78387-x05-78367d1-2000-microsoft-cd`: the zip holds `vs6sp4.mdf`, raw 2352-byte sectors (keep bytes 16-2064 of each for a plain ISO); `enu/vc98/lib`. The same CD's `enu/PP/vcpp.exe` is the SP4 Processor Pack |
+| 8168, 8447, 8966, 9044, 9782, 7303, 3077 | VC6 RTM, SP3, SP5, SP5+PP (same libraries as SP5), SP6, VC5, VC7.1 | [nolffan/toolchains](https://github.com/nolffan/toolchains) (`msvc-*/LIB`, `COMPILERS.md` for the evidence) |
+| SP5 | the old default (`--libs` with no argument) | archive.org `visual-studio-6-0-sp5-portable`, `vc_studio/main/VC98/Lib` |
+
+Measured: 213 functions, all `LIBCMT.LIB`, all inside the CRT tail; 208 of them are in the 8797 build, and the
+8797 libraries add none the others miss. So the rest of the tail (the `_malloc` family, `mainCRTStartup`) does not
+fail for want of the right build. `--only all` (MFC, ATL, everything) finds only 10-23-byte setters in the game's
+code that happen to equal MFC/ATL members: coincidences, never set aside.
 
 ## Which compiler built the unit
 
-The exe's Rich header says build 8943, which no public VC6 install carries. The closest available compilers sit on
-either side of it, and they do not emit the same code: `6.0` (cl 12.00.8168) is the project default because it
-reproduces the great majority of the binary, but some functions (for example a `return true` compiled to
-`xor eax, eax; inc eax` rather than `push 1; pop eax`) only appear under `7.0`/`7.1`.
+The exe's Rich header says the game's C++ was built by build 8943: Visual C++ 6.0 with the **Processor Pack**, whose
+back end (`C2.DLL`) is a 13.00 file version behind VC6's 12.00 front end. Build 8943 itself (the pack's first, SP4
+era) is in no public archive. The nearest held one is decomp.me's `6.5pp` (SP5 + Processor Pack, `C2.DLL`
+13.00.9044). A `return true` compiled to `xor eax, eax; inc eax` rather than `push 1; pop eax` is that back end; plain
+`6.0` (12.00.8168) cannot produce it, which is why some functions only matched under `7.0`/`7.1` before the
+Processor Pack compilers were installed. `compiler` sweeps every version `installed()` finds (see the next section).
 
 ```
 tools/outmatch/outmatch.sh compiler --symbol '@func_00413AE5@4'          # per-function sweep, report only
@@ -175,6 +194,68 @@ tools/outmatch/outmatch.sh compiler --symbol SYM --apply                # pin fi
 the list of functions that would be lost — that is the signal to divide the unit (the app's `split_unit` keeps the
 compiler setting per file). The `compiler` phase of `loop` reports the sweep for every candidate it visits so the
 choice is recorded even when nothing is applied.
+
+## Adding the OmniBlade compilers (6.3-6.6, 6.5pp)
+
+decompdecomp's Visual C++ pack installs `6.0`, `7.0` and `7.1` only. The other VC6 service packs are published by
+decomp.me's maintainers as Bin+Include tarballs in the
+[OmniBlade/decomp.me `msvcwin9x` release](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (the same
+release decompdecomp takes its 6.0 and 7.1 from; decomp.me also serves them as `ghcr.io/decompme/compilers/win9x/*`):
+
+| version | asset | CL / C1 / C1XX / C2 file versions | sha256 |
+|---|---|---|---|
+| `6.3` (SP3) | `msvc6.3.tar.gz` | 12.00.8168 / 8472 / 8472 / 8447 | `84f73e718b3671bfd5de3b7764622b07633b572ee826ca3b77602d224c128608` |
+| `6.4` (SP4) | `msvc6.4.tar.gz` | 12.00.8804 / 8867 / 8867 / 8799 | `6d4ef930390ca7481ae5b63ea3bf00d62e0993cd95f1d6f42ba06bb30f993c57` |
+| `6.5` (SP5) | `msvc6.5.tar.gz` | 12.00.8804 / 8867 / 8964 / 8966 | `16f639b7961ca74b938532d912d2bb655d5ea08b01dc2f50e4a180774d138169` |
+| `6.5pp` (SP5 + Processor Pack) | `msvc6.5pp.tar.gz` | 12.00.8804 / 8867 / 8964 / **13.00.9044** | `0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e` |
+| `6.6` (SP6) | `msvc6.6.tar.gz` | 12.00.8804 / 9782 / 9782 / 9782 | `0a4cd7628a79067ee62dd90d40d2c027221cc46f530e40d92245ec46d550dd4d` |
+
+**Install one locally.** Extract it as its own version folder beside the ones decompdecomp installed:
+
+```sh
+v=6.5pp
+mkdir -p ~/.local/share/decompnet/toolchains/msvc/$v
+curl -L https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc$v.tar.gz \
+  | tar xz -C ~/.local/share/decompnet/toolchains/msvc/$v          # gives $v/Bin/CL.EXE, $v/Include, ...
+```
+
+Then pin a file to it like any other version: `"src/auto/text_00413AE5.cpp": "6.5pp"` in
+`config/casefile1/file_compilers.json` (or the app's per-file compiler setting / `set_file_compiler`), or make it the
+project's default in the app's Settings.
+
+**Why the app picks it up.** decompdecomp gives `tools/configure.py` every installed pack folder as `--msvc`
+(`scratch.tool_args`: `toolchains/msvc` and `toolchains/msvc2005`), and `configure.py`'s `msvc(version)` takes the
+first `<folder>/<version>/Bin/CL.EXE`. Nothing checks the version name against a list, so a folder is all it takes;
+`/api/try` judges with it like any other. The harness looks the same way (`common.cl_exe`), so `8.0`/`8.0SP1` from
+`msvc2005` are swept too.
+
+**Measured on this game (2026-11-15, every unit under every version):** exact functions with the whole project on one
+version: `6.0` 1926, `6.3` 1926, `6.4`/`6.5`/`6.6` 1913, **`6.5pp` 1995**, `7.0` 1105, `7.1` 1066, `8.0` 1023.
+`6.5pp` as the default with 27 files pinned elsewhere (25 to `6.0`, mostly the CRT tail; one `7.0`) gives 2089.
+The SP4 Processor Pack (`c2.dll` 13.00.8876, `enu/PP/vcpp.exe` on the archive.org "Microsoft Visual Studio 6 SP4"
+CD) brackets build 8943 from below but never beats `6.5pp`: it loses three functions and gains none.
+
+**The app's own route for a version it doesn't ship** is a "Microsoft Visual C++ (your own copy)" kit (Setup >
+Compilers & tools, or `POST /api/toolchain {"id": "visualcpp", "folder": ...}`): decompdecomp reads the copy's
+`c2.dll` version and names it `own-<build>` (`own-13.00.9044` for 6.5pp), passes it to `configure.py` as `--own`, and
+lists it in Settings, where the per-file and whole-game compiler switches (which keep only files whose matches hold)
+accept it. A plain folder under `toolchains/msvc` builds and judges, but Settings and `set_file_compiler` refuse a
+version outside `MSVC_VERSIONS`, so pins to it can only be written into `file_compilers.json` by hand.
+
+**Caveats.** The folder is not part of decompdecomp's pack: reinstalling the pack in Setup can remove it, and every
+machine that builds or judges this project needs it too (a file pinned to a missing version fails `configure.py`
+with "Visual C++ 6.5pp isn't in ..."). The durable fix is to add the archives to decompdecomp's
+`src/decompnet/toolchains.toml`, next to its existing 6.0 entry:
+
+```toml
+[[msvc.parts]]
+url = "https://github.com/OmniBlade/decomp.me/releases/download/msvcwin9x/msvc6.5pp.tar.gz"
+sha256 = "0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e"
+into = "6.5pp"
+```
+
+(one stanza per version, with the sha256 from the table), plus `"MSVC/6.5pp"` etc. in `consoles/pc/__init__.py`'s
+`MSVC_VERSIONS` so Settings offers them.
 
 ## Drafts for functions with no C at all
 

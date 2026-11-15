@@ -22,12 +22,12 @@ from pathlib import Path
 
 from . import common
 
-VERSIONS = ("6.0", "7.0", "7.1")
+VERSIONS = ("6.0", "6.3", "6.4", "6.5", "6.5pp", "6.6", "7.0", "7.1", "8.0", "8.0SP1")
 STATE = common.STATE / "compiler.json"
 
 
 def installed() -> list[str]:
-    return [v for v in VERSIONS if (common.TOOLCHAINS / v / "Bin" / "CL.EXE").is_file()]
+    return [v for v in VERSIONS if common.cl_exe(v)]
 
 
 def configured(unit: str) -> str:

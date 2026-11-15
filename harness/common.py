@@ -30,6 +30,13 @@ FUNCTIONS_JSON = CONFIG / "functions.json"
 FILE_FLAGS = CONFIG / "file_flags.json"
 FILE_COMPILERS = CONFIG / "file_compilers.json"
 TOOLCHAINS = Path.home() / ".local/share/decompnet/toolchains/msvc"
+PACKS = (TOOLCHAINS, TOOLCHAINS.parent / "msvc2005")  # decompdecomp's MSVC packs: 6.0-7.1 (+ hand-added), 2005-2010
+
+
+def cl_exe(version: str) -> Path | None:
+    """A version's CL.EXE in the first pack that has it, as tools/configure.py looks it up."""
+    return next((p for pack in PACKS for p in (pack / version / "Bin" / "CL.EXE", pack / version / "Bin" / "cl.exe")
+                 if p.is_file()), None)
 BUILD = ROOT / "build" / VERSION
 TARGETS = BUILD / "target"
 STATE = ROOT / ".outmatch"
@@ -195,7 +202,10 @@ def app_python() -> str:
 def build_command(unit: str) -> list[str]:
     """The exact argv ninja uses for a unit, cached per unit (authoritative source of compiler/include paths)."""
     cache = STATE / "build_commands.json"
-    data = json.loads(cache.read_text()) if cache.is_file() else {}
+    try:
+        data = json.loads(cache.read_text()) if cache.is_file() else {}
+    except ValueError:  # a cache half-written by another process: rebuild it
+        data = {}
     if unit in data:
         return data[unit]
     obj = f"build/{VERSION}/src/auto/{unit}.obj"
@@ -206,7 +216,9 @@ def build_command(unit: str) -> list[str]:
     argv = shlex.split(lines[-1])
     data[unit] = argv
     STATE.mkdir(exist_ok=True)
-    cache.write_text(json.dumps(data, indent=1))
+    tmp = cache.with_name(f"{cache.name}.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=1))
+    tmp.replace(cache)  # atomic: parallel sweeps read it while others add units
     return argv
 
 
@@ -246,10 +258,14 @@ def scratch_compile(root: Path, unit: str, source_text: str, out_rel: str,
         cleaned.append(head[i])
         i += 1
     if compiler:
-        for i, tok in enumerate(cleaned):
-            if tok == "--compiler" and i + 1 < len(cleaned):
-                cleaned[i + 1] = TOOLCHAINS / compiler / "Bin" / "CL.EXE"
-                break
+        cl = cl_exe(compiler)
+        if cl is None:
+            raise OutmatchError(f"Visual C++ {compiler} isn't installed in {' or '.join(map(str, PACKS))}")
+        for i, tok in enumerate(cleaned[:-1]):
+            if tok == "--compiler":
+                cleaned[i + 1] = cl
+            elif tok == "--include" and Path(cleaned[i + 1]).parent.parent in PACKS:
+                cleaned[i + 1] = cl.parent.parent / "Include"  # its own headers, not the unit's version's
     out = root / out_rel
     out.parent.mkdir(parents=True, exist_ok=True)
     argv = [*cleaned, "--output", out_rel, "--source", f"src/auto/{unit}.cpp", "--", *use]
