@@ -98,7 +98,7 @@ class Pool:
     def __init__(self, unit: str, jobs: int = common.JOBS) -> None:
         self.unit = unit
         self.jobs = max(1, jobs)
-        self.roots = [common.make_scratch(unit, i) for i in range(self.jobs)]
+        self.roots = [common.make_scratch(unit, common.slot(i)) for i in range(self.jobs)]
         self.free: queue.Queue[Path] = queue.Queue()
         for root in self.roots:
             self.free.put(root)
@@ -177,7 +177,7 @@ def source_with(unit_text: str, symbol: str, definition: str, helpers: str = "")
 def verify(fn: dict, definition: str, helpers: str = "") -> float:
     """Score the finalist from a freshly copied tree, the way the app will build it after its next edit."""
     unit = fn["unit"]
-    root = common.make_scratch(unit, 99, fresh=True)
+    root = common.make_scratch(unit, common.slot(90), fresh=True)
     text = common.source_path(unit).read_text(encoding="utf-8")
     obj = common.scratch_compile(root, unit, source_with(text, fn["name"], definition, helpers),
                                  f"build/{common.VERSION}/src/auto/{unit}.obj")

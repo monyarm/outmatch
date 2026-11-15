@@ -36,7 +36,7 @@ def plan(fn: dict) -> dict:
     helpers, definition = csource.split_extra(fn.get("source") or "")
     restored = search.source_with(text, symbol, definition, helpers)
     target = common.target_obj(unit)
-    root = common.make_scratch(unit, 700 + fn["id"] % 200, fresh=True)
+    root = common.make_scratch(unit, common.slot(700 + fn["id"] % 150), fresh=True)
     out_rel = f"build/{common.VERSION}/src/auto/{unit}.obj"
     before = common.scores(target, common.scratch_compile(root, unit, text, out_rel))
     after = common.scores(target, common.scratch_compile(root, unit, restored, out_rel))

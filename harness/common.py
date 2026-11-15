@@ -266,6 +266,11 @@ def sync_tree(root: Path) -> None:
                 shutil.copy2(path, target)
 
 
+def slot(index: int) -> int:
+    """A scratch-tree index, offset by OUTMATCH_SLOT so parallel agents never share a worker tree."""
+    return int(os.environ.get("OUTMATCH_SLOT", "0")) + int(index)
+
+
 def make_scratch(unit: str, index: int = 0, fresh: bool = False) -> Path:
     """A reusable scratch tree for one worker: the project's sources/headers/config/tools, nothing else.
 

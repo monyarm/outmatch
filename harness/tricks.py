@@ -459,7 +459,7 @@ def diff_kinds(fn: dict, definition: str | None = None) -> dict[str, int]:
     """How the current body differs from the target, as counts of objdiff's `diff_kind`s."""
     unit = fn["unit"]
     try:
-        root = common.make_scratch(unit, 100, fresh=True)
+        root = common.make_scratch(unit, common.slot(95), fresh=True)
         text = common.source_path(unit).read_text(encoding="utf-8")
         if definition is not None:
             text = search.source_with(text, fn["name"], definition)
