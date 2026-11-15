@@ -33,12 +33,13 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 | --- | --- |
 | `search NAME [--seconds 120] [--jobs 4] [--count 64] [--seed N] [--no-submit]` | hill-climb decomp-permuter variants for one function; submits the first exact match |
 | `run [--max-ratio 0.06] [--limit 20] [--seconds 30] [--any] [--stop-on-match] [--no-submit]` | the same over the near-miss queue, worst-first; skips claimed functions. `--any` includes functions the app has not permuted 4 times |
-| `loop [--max-ratio 0.06] [--min-pct 0] [--order fresh\|closest] [--limit 0] [--seconds 900] [--phases levers,pragma,permuter] [--unit U] [--again] [--forever] [--dry-run]` | works the queue with **no function named**: for each candidate it runs the phases in order, keeps the ones that help, submits a 100, and records what it tried in `.outmatch/ledger.jsonl`. `--min-pct 99.5` restricts the queue to the closest drafts (`--order closest` sorts by percentage instead of least-visited). Visits rotate, so a second run continues where the first stopped; a phase already run on unchanged source is skipped unless `--again`. `--dry-run` prints the queue; `--forever` waits for new candidates |
+| `loop [--max-ratio 0.06] [--min-pct 0] [--order fresh\|closest] [--limit 0] [--seconds 900] [--phases msvc,levers,pragma,permuter,compiler] [--unit U] [--again] [--forever] [--dry-run] [--depth N] [--beam K] [--cap N] [--focus auto|off]` | works the queue with **no function named**: for each candidate it runs the phases in order, keeps the ones that help, submits a 100, and records what it tried in `.outmatch/ledger.jsonl`. `--min-pct 99.5` restricts the queue to the closest drafts (`--order closest` sorts by percentage instead of least-visited). Visits rotate, so a second run continues where the first stopped; a phase already run on unchanged source is skipped unless `--again`. `--dry-run` prints the queue; `--forever` waits for new candidates |
 | `report [SYMBOL]` | the loop's ledger: functions, visits, matches and per-phase runs, or one function's whole history |
 | `flags [--unit U \| --all] [--apply SYMBOL]` | sweep optimisation levels and codegen flags for a whole unit, scored per function. `--apply` keeps a clean set in `file_flags.json`, or splits the function into its own unit when the set regresses its unit mates |
 | `pragma NAME` | `#pragma optimize/inline_depth/auto_inline` wrappers plus forward/extern/typedef declaration-run state carriers around the definition |
 | `levers NAME [--only id,id]` | mechanical CMR2Decomp/brickpark source idioms (`if-else-swap`, `ternary-to-if`, `and-or-swap`, `compound-split`, `assign-to-compound`, `postinc`, `chain-assign`, `decl-hoist`) |
 | `msvc NAME [--only g,g] [--file F] [--cap 160] [--depth N] [--beam K] [--focus auto\|off] [--apply]` | the MSVC catalogue in bulk: argument order, local rename, declaration order, condition/ternary form, init form, `volatile`, integer types, statement order, `x -= k; f(x)`, boolean value forms, if/else negation, index width, `++i`, compare constants, compound assignment, switch order; every variant is compiled and scored. `--depth` chains passes on the improved body and a tie may continue the chain; `--beam K` keeps K equally-good bodies per generation (1 = greedy hill-climb); `--focus auto` orders the families by the objdiff diff kinds actually observed |
+| `compiler [--symbol NAME] [--unit U] [--limit N] [--apply]` | score a function (or a whole unit) under every installed CL (`6.0`, `7.0`, `7.1`) and report the best version and what it gains; `--apply` pins `file_compilers.json` when no unit mate regresses, and otherwise reports `needs_split` with the functions that would be lost so the unit can be divided |
 | `stale [--symbol NAME]... [--write]` | functions whose recorded best the current tree cannot reproduce: re-measure the recorded body and the file body, and with `--write` put the measured percentage in `.outmatch/stale.json` so queueing and `report` use the truth |
 | `submit NAME FILE` | send a saved variant (e.g. from `.outmatch/best/`) through `/api/try` |
 | `libmatch [--libs DIR] [--write] [--range-from HEX]` | match the project's functions against the VC6 static libraries' own objects (masked-relocation signatures), then `--write` records them in `set_aside.json` with the library, object and symbol as the reason, and adds their names |
@@ -156,6 +157,24 @@ The libraries are not committed (43 MB, and Microsoft's): take `vc_studio/main/V
 `/tmp/opencode/vs60/vc_studio/main/VC98/Lib`). This project's original compiler is cl 12.00.8943 (VC6 Processor
 Pack, from the PE's Rich header); the archive's library build is 12.00.9044, which is why the big formatting/startup
 routines match exactly but the `_malloc` family and `mainCRTStartup` do not.
+
+## Which compiler built the unit
+
+The exe's Rich header says build 8943, which no public VC6 install carries. The closest available compilers sit on
+either side of it, and they do not emit the same code: `6.0` (cl 12.00.8168) is the project default because it
+reproduces the great majority of the binary, but some functions (for example a `return true` compiled to
+`xor eax, eax; inc eax` rather than `push 1; pop eax`) only appear under `7.0`/`7.1`.
+
+```
+tools/outmatch/outmatch.sh compiler --symbol '@func_00413AE5@4'          # per-function sweep, report only
+tools/outmatch/outmatch.sh compiler --unit text_0041BFF4                # every open function in the unit
+tools/outmatch/outmatch.sh compiler --symbol SYM --apply                # pin file_compilers.json if safe
+```
+
+`--apply` refuses when the version would regress a function the unit already matches, and prints `needs_split` with
+the list of functions that would be lost — that is the signal to divide the unit (the app's `split_unit` keeps the
+compiler setting per file). The `compiler` phase of `loop` reports the sweep for every candidate it visits so the
+choice is recorded even when nothing is applied.
 
 ## Drafts for functions with no C at all
 

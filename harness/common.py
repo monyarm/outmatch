@@ -29,6 +29,7 @@ CONFIG = ROOT / "config" / VERSION
 FUNCTIONS_JSON = CONFIG / "functions.json"
 FILE_FLAGS = CONFIG / "file_flags.json"
 FILE_COMPILERS = CONFIG / "file_compilers.json"
+TOOLCHAINS = Path.home() / ".local/share/decompnet/toolchains/msvc"
 BUILD = ROOT / "build" / VERSION
 TARGETS = BUILD / "target"
 STATE = ROOT / ".outmatch"
@@ -227,7 +228,8 @@ def _split_command(argv: list[str]) -> tuple[list[str], list[str]]:
 
 
 def scratch_compile(root: Path, unit: str, source_text: str, out_rel: str,
-                    flags: list[str] | None = None, extra: list[str] | None = None) -> Path:
+                    flags: list[str] | None = None, extra: list[str] | None = None,
+                    compiler: str | None = None) -> Path:
     """Compile `unit` inside a scratch root (a copy of src/include/config/tools), returning the object path."""
     src = root / "src" / "auto" / f"{unit}.cpp"
     src.write_text(source_text, encoding="utf-8", newline="")
@@ -243,6 +245,11 @@ def scratch_compile(root: Path, unit: str, source_text: str, out_rel: str,
             continue
         cleaned.append(head[i])
         i += 1
+    if compiler:
+        for i, tok in enumerate(cleaned):
+            if tok == "--compiler" and i + 1 < len(cleaned):
+                cleaned[i + 1] = TOOLCHAINS / compiler / "Bin" / "CL.EXE"
+                break
     out = root / out_rel
     out.parent.mkdir(parents=True, exist_ok=True)
     argv = [*cleaned, "--output", out_rel, "--source", f"src/auto/{unit}.cpp", "--", *use]
@@ -400,6 +407,18 @@ def stale() -> dict:
             _STALE = {}
         _STALE_MTIME = mtime
     return _STALE
+
+
+def function_by_name(name: str) -> dict | None:
+    """One function's row, open or not, draft or not."""
+    rows = query("SELECT id,name,unit,n_insns,size,best_score,best_source,permuted,meta FROM functions "
+                 "WHERE project_id=? AND name=?", project_id(), name)
+    if not rows:
+        return None
+    fid, sym, unit, n_insns, size, score, src, permuted, meta = rows[0]
+    meta = json.loads(meta) if meta else {}
+    return {"id": fid, "name": sym, "unit": unit or Path(meta.get("source", "")).stem, "n_insns": n_insns,
+            "size": size, "score": score, "source": src, "permuted": permuted, "meta": meta}
 
 
 def draftless(min_size: int = 0, limit: int | None = None, exclude_claims: bool = True) -> list[dict]:

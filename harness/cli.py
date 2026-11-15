@@ -163,6 +163,28 @@ def cmd_loop(args) -> int:
 
 
 
+def cmd_compiler(args) -> int:
+    from . import compilers
+    if args.symbol:
+        fn = next((f for f in common.open_functions() if f["name"] == args.symbol), None) \
+            or common.function_by_name(args.symbol)
+        if fn is None:
+            print(json.dumps({"error": f"{args.symbol}: no open function with a draft"}))
+            return 1
+        todo = [fn]
+    else:
+        todo = [f for f in common.open_functions(limit=0) if not args.unit or f["unit"] == args.unit]
+        if args.limit:
+            todo = todo[:args.limit]
+    for fn in todo:
+        out = compilers.sweep(fn)
+        compilers.record(out)
+        if args.apply and out["gain"] > 0:
+            out["applied"] = compilers.apply(out)
+        print(json.dumps(out))
+    return 0
+
+
 def cmd_draft(args) -> int:
     todo = common.draftless(min_size=args.min_size, limit=args.limit or (0 if args.symbol else 0))
     if args.symbol:
@@ -310,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--unit", default="", help="only functions of this unit")
     lp.add_argument("--limit", type=int, default=0, help="functions this run (0 = every candidate)")
     lp.add_argument("--seconds", type=float, default=900, help="budget per function")
-    lp.add_argument("--phases", default="msvc,levers,pragma,permuter",
+    lp.add_argument("--phases", default="msvc,levers,pragma,permuter,compiler",
                     help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags); flags sweeps the unit "
                          "and applies only a clean winning set")
     lp.add_argument("--focus", choices=("auto", "off"), default="auto",
@@ -336,6 +358,12 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--symbol", action="append", default=[], help="symbol to check (repeatable; default: all known)")
     st.add_argument("--write", action="store_true", help="record the measurements in .outmatch/stale.json")
     st.set_defaults(func=cmd_stale)
+    cp = sub.add_parser("compiler", help="which MSVC version matches a function (6.0 / 7.0 / 7.1)")
+    cp.add_argument("--symbol", default="", help="one function")
+    cp.add_argument("--unit", default="", help="every open function of a unit")
+    cp.add_argument("--limit", type=int, default=0)
+    cp.add_argument("--apply", action="store_true", help="pin the unit when no other match is lost")
+    cp.set_defaults(func=cmd_compiler)
     dr = sub.add_parser("draft", help="first-draft packets for functions with no C at all")
     dr.add_argument("--symbol", default="", help="one function instead of the queue")
     dr.add_argument("--limit", type=int, default=0)

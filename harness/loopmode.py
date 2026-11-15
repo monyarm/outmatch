@@ -15,7 +15,7 @@ from pathlib import Path
 from . import common, search
 
 LEDGER = common.STATE / "ledger.jsonl"
-PHASES = ("msvc", "levers", "pragma", "permuter", "flags")
+PHASES = ("msvc", "levers", "pragma", "permuter", "compiler", "flags")
 
 
 def _now() -> float:
@@ -189,6 +189,13 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
                                     submit_match=submit_match, say=say, apply_best=apply_best)
                 out = {"best_pct": got.best_pct, "matched": got.matched, "submitted": got.submitted,
                        "note": got.note}
+            elif name == "compiler":
+                from . import compilers
+                out = compilers.sweep(fn)
+                compilers.record(out)
+                if out["best"] != out["configured"] and out["gain"] > 0:
+                    out["note"] = (f"{out['best_pct']}% with {out['best']}, "
+                                   f"{out['pct'].get(out['configured'])}% with {out['configured']}")
             elif name == "flags":
                 from . import csource, flags
                 out = flags.try_for(symbol, jobs=jobs)
