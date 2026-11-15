@@ -102,7 +102,14 @@ def pending(fn: dict, phases: tuple[str, ...], ledger: Ledger) -> bool:
 
 
 def pct_of(fn: dict) -> float:
-    """The draft's approximate objdiff percentage: the app's score is hundredths of a percent times the insns."""
+    """The draft's approximate objdiff percentage: the app's score is hundredths of a percent times the insns.
+
+    A function in `.outmatch/stale.json` uses the percentage its own body actually scores: the app's stored best can
+    be unreachable from the current tree (it was recorded against a different one), and queueing on it wastes passes.
+    """
+    row = common.stale().get(fn["name"])
+    if row and row.get("measured") is not None:
+        return float(row["measured"])
     return 100.0 - 100.0 * (fn.get("score") or 0) / (100.0 * max(fn.get("n_insns") or 1, 1))
 
 
@@ -138,7 +145,8 @@ def _unit_text(fn: dict) -> str:
 
 def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: float = 900.0,
           jobs: int = common.JOBS, count: int = 64, seed: int = 0, submit_match: bool = True,
-          again: bool = False, apply_best: bool = False, depth: int = 1, beam: int = 1, say=print) -> dict:
+          again: bool = False, apply_best: bool = False, depth: int = 1, beam: int = 1, focus: bool = True,
+          say=print) -> dict:
     """Run the requested phases on one function, best-first, and record each in the ledger."""
     symbol, unit = fn["name"], fn["unit"]
     text = _unit_text(fn)
@@ -161,13 +169,14 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
                 from . import tricks
                 if depth > 1:
                     chain = tricks.ascend(fn, jobs=jobs, depth=depth, beam=beam, submit_match=submit_match,
-                                          apply_best=apply_best)
+                                          apply_best=apply_best, focus=focus)
                     out = {"symbol": symbol, "variants": chain.get("variants"), "best_pct": chain.get("best_pct"),
                            "best_label": chain.get("best_label"), "matched": chain.get("matched"),
                            "submitted": chain.get("submitted") or {}, "depth": chain.get("depth"),
                            "rows": chain.get("steps") or []}
                 else:
-                    out = tricks.run(fn, jobs=jobs, submit_match=submit_match, apply_best=apply_best)
+                    out = tricks.run(fn, jobs=jobs, submit_match=submit_match, apply_best=apply_best,
+                                     focus=focus)
             elif name == "levers":
                 from . import levers
                 out = levers.apply(symbol, jobs=jobs, submit_match=submit_match, apply_best=apply_best)
@@ -228,7 +237,7 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
 def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: int, count: int, seed: int,
          submit_match: bool, again: bool, forever: bool, idle: float, phases: tuple[str, ...],
          any_permuted: bool = False, min_pct: float = 0.0, order: str = "fresh", apply_best: bool = False,
-         depth: int = 1, beam: int = 1, say=print) -> dict:
+         depth: int = 1, beam: int = 1, focus: bool = True, say=print) -> dict:
     ledger = Ledger()
     total = {"visited": 0, "matched": 0, "phases": 0}
     try:
@@ -247,7 +256,7 @@ def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: i
                                 "visits": ledger.summary(fn["name"]).get("visits", 0)}))
                 res = visit(fn, ledger, phases=phases, seconds=seconds, jobs=jobs, count=count, seed=seed,
                             submit_match=submit_match, again=again, apply_best=apply_best, depth=depth,
-                            beam=beam, say=say)
+                            beam=beam, focus=focus, say=say)
                 total["visited"] += 1
                 total["matched"] += int(res["matched"])
                 total["phases"] += len([p for p in res["phases"] if "skipped" not in p and "error" not in p])

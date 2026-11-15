@@ -375,6 +375,28 @@ def definition_span(source_text: str, symbol: str, name_hint: str | None = None)
     return span
 
 
+_STALE: dict | None = None
+_STALE_MTIME: float = -1.0
+
+
+def stale() -> dict:
+    """Functions whose recorded best score the current tree cannot reproduce (`outmatch.sh stale`)."""
+    global _STALE, _STALE_MTIME
+    path = STATE / "stale.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        _STALE, _STALE_MTIME = {}, -1.0
+        return {}
+    if _STALE is None or mtime != _STALE_MTIME:
+        try:
+            _STALE = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _STALE = {}
+        _STALE_MTIME = mtime
+    return _STALE
+
+
 def draftless(min_size: int = 0, limit: int | None = None, exclude_claims: bool = True) -> list[dict]:
     """Open functions with no C at all, biggest first - what a first draft would unlock."""
     sql = ("SELECT id,name,unit,n_insns,size,attempts,meta FROM functions "

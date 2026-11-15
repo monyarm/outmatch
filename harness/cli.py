@@ -115,14 +115,15 @@ def cmd_msvc(args) -> int:
     definition = Path(args.file).read_text(encoding="utf-8") if args.file else None
     if args.depth > 1:
         out = tricks.ascend(fn, only=args.only, cap=args.cap, jobs=args.jobs, depth=args.depth, beam=args.beam,
-                            submit_match=not args.no_submit, apply_best=args.apply, definition=definition)
+                            submit_match=not args.no_submit, apply_best=args.apply, definition=definition,
+                            focus=args.focus != "off")
         for step in out.get("steps") or []:
             print(f"{step['pct']:8.3f}  {step['label']}")
         out.pop("definition", None)
         _say(out)
         return 0 if out.get("matched") else 1
     out = tricks.run(fn, only=args.only, cap=args.cap, jobs=args.jobs, submit_match=not args.no_submit,
-                     apply_best=args.apply, definition=definition)
+                     apply_best=args.apply, definition=definition, focus=args.focus != "off")
     for row in sorted(out.get("rows") or [], key=lambda r: r["pct"], reverse=True):
         print(f"{row['pct']:8.3f}  {row['label']}" + (f"  ({row['error']})" if row.get("error") else ""))
     _say({k: v for k, v in out.items() if k != "rows"})
@@ -155,7 +156,8 @@ def cmd_loop(args) -> int:
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
                         again=args.again, forever=args.forever, idle=args.idle, phases=phases,
                         any_permuted=args.any, min_pct=args.min_pct, order=args.order,
-                        apply_best=args.apply_improvements, depth=args.depth, beam=args.beam)
+                        apply_best=args.apply_improvements, depth=args.depth, beam=args.beam,
+                        focus=args.focus != "off")
     _say({**out, "queued": len(todo)})
     return 0
 
@@ -196,6 +198,42 @@ def cmd_restore(args) -> int:
     print(json.dumps({"missing": len(todo), "skipped_or_failed": bad}))
     return 0
 
+def cmd_stale(args) -> int:
+    """Re-measure the functions whose stored best the tree cannot reproduce, and record the truth."""
+    from . import loopmode
+    measured = common.stale()
+    symbols = list(args.symbol) or list(measured)
+    out = {}
+    for sym in symbols:
+        fn = _function(sym)
+        body = fn.get("source") or ""
+        try:
+            helpers, definition = search.csource.split_extra(body)
+            best_pct = search.verify(fn, definition, helpers) if body else None
+        except (common.OutmatchError, KeyError) as e:
+            best_pct = None
+            definition = ""
+        text = common.source_path(fn["unit"]).read_text(encoding="utf-8")
+        own, start, end = common.definition_span(text, sym)
+        file_pct = None
+        if start >= 0:
+            try:
+                file_pct = search.verify(fn, text[start:end])
+            except common.OutmatchError:
+                pass
+        stored = round(loopmode.pct_of({**fn, "score": fn.get("score")}) if sym not in measured else
+                       measured[sym]["stored"], 3)
+        row = {"stored": stored, "best_source_pct": None if best_pct is None else round(best_pct, 3),
+               "measured": None if file_pct is None else round(file_pct, 3), "unit": fn["unit"]}
+        out[sym] = row
+        print(json.dumps({"symbol": sym, **row}))
+    if args.write:
+        merged = {**measured, **out}
+        (common.STATE / "stale.json").write_text(json.dumps(merged, indent=1, sort_keys=True), encoding="utf-8")
+        print(json.dumps({"wrote": len(merged)}))
+    return 0
+
+
 def cmd_report(args) -> int:
     from . import loopmode
     ledger = loopmode.Ledger()
@@ -203,7 +241,11 @@ def cmd_report(args) -> int:
         _say({"symbol": args.symbol, **ledger.summary(args.symbol),
               "history": [r for r in ledger.rows if r.get("symbol") == args.symbol][-args.limit:]})
         return 0
-    _say(ledger.report())
+    report = ledger.report()
+    stale = common.stale()
+    if stale:
+        report["stale"] = {s: {"stored": r.get("stored"), "measured": r.get("measured")} for s, r in stale.items()}
+    _say(report)
     return 0
 
 
@@ -271,6 +313,8 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--phases", default="msvc,levers,pragma,permuter",
                     help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags); flags sweeps the unit "
                          "and applies only a clean winning set")
+    lp.add_argument("--focus", choices=("auto", "off"), default="auto",
+                    help="order the catalogue by the observed objdiff diff kinds (default) or run it as listed")
     lp.add_argument("--beam", type=int, default=1, help="bodies kept per generation (1 = greedy)")
     lp.add_argument("--depth", type=int, default=1,
                     help="msvc phase: catalogue passes per function, each from the previous best body")
@@ -287,6 +331,10 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--dry-run", action="store_true", help="print the queue and exit")
     lp.set_defaults(func=cmd_loop)
 
+    st = sub.add_parser("stale", help="re-measure functions whose stored best the tree cannot reproduce")
+    st.add_argument("--symbol", action="append", default=[], help="symbol to check (repeatable; default: all known)")
+    st.add_argument("--write", action="store_true", help="record the measurements in .outmatch/stale.json")
+    st.set_defaults(func=cmd_stale)
     dr = sub.add_parser("draft", help="first-draft packets for functions with no C at all")
     dr.add_argument("--symbol", default="", help="one function instead of the queue")
     dr.add_argument("--limit", type=int, default=0)
@@ -348,6 +396,8 @@ def main(argv: list[str] | None = None) -> int:
          "stmt-order"]))
     mv.add_argument("--file", default="", help="base the catalogue on this definition instead of the unit's")
     mv.add_argument("--cap", type=int, default=160, help="maximum variants to score")
+    mv.add_argument("--focus", choices=("auto", "off"), default="auto",
+                    help="order the catalogue by the observed objdiff diff kinds (default) or run it as listed")
     mv.add_argument("--beam", type=int, default=1, help="bodies kept per generation (1 = greedy)")
     mv.add_argument("--depth", type=int, default=1,
                     help="catalogue passes, each starting from the previous best body (2+ chains tricks)")
