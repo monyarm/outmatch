@@ -41,6 +41,7 @@ Everything else is the Python standard library. Scratch trees live in `/tmp/open
 | `submit NAME FILE` | send a saved variant (e.g. from `.outmatch/best/`) through `/api/try` |
 | `libmatch [--libs DIR] [--write] [--range-from HEX]` | match the project's functions against the VC6 static libraries' own objects (masked-relocation signatures), then `--write` records them in `set_aside.json` with the library, object and symbol as the reason, and adds their names |
 | `draft [--limit N] [--min-size B] [--symbol NAME] [--out DIR] [--print] [--write]` | functions with no C at all, biggest first: writes a packet per function (disassembly, Ghidra pseudocode, unit declarations, callees) to paste into a model; test the result with `try` |
+| `restore [--symbol NAME] [--limit N] [--submit] [--force]` | functions the app has a best for but whose unit no longer defines: measure the recorded body against the current file, report neighbours it would disturb, and `--submit` re-measure it through the app (a large gap means the record is stale, not that the C is lost) |
 
 | `status` | DB status counts plus the app's `/api/state` |
 | `release NAME` | give a claim back |

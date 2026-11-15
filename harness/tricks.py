@@ -276,12 +276,65 @@ def variants(definition: str, only: str = "", cap: int = 160) -> list[tuple[str,
     return out
 
 
+def _body(fn: dict, definition: str | None) -> str:
+    text = common.source_path(fn["unit"]).read_text(encoding="utf-8")
+    own, start, end = search.common.definition_span(text, fn["name"])
+    return definition if definition is not None else (text[start:end] if start >= 0 else "")
+
+
+def ascend(fn: dict, only: str = "", cap: int = 160, jobs: int = common.JOBS, depth: int = 3,
+          submit_match: bool = True, apply_best: bool = False, definition: str | None = None) -> dict:
+    """Hill-climb the catalogue: the best single trick, then the catalogue again *on that body*, up to `depth` steps.
+
+    A single pass only ever applies one edit, but real functions often need two that only pay off together (an
+    argument swap plus a rename, a decl reorder plus a type change). Each step re-enumerates from the improved body,
+    so independent fixes stack; `depth` bounds the work at `depth` catalogue passes per function.
+    """
+    symbol = fn["name"]
+    base = _body(fn, definition)
+    if not base:
+        return {"symbol": symbol, "variants": 0, "best_pct": None, "error": f"no definition in src/auto/{fn['unit']}.cpp"}
+    current, trail, seen, total = base, [], {base}, 0
+    best_pct, best_label = None, None
+    matched, submitted = False, {}
+    for _ in range(max(1, depth)):
+        cands = [c for c in variants(current, only=only, cap=cap) if c[1] not in seen]
+        if not cands:
+            break
+        res = search.judge(fn, cands, jobs=jobs, submit_match=submit_match, write_best=False, current=current)
+        total += res.get("variants") or 0
+        matched, submitted = bool(res.get("matched")), res.get("submitted") or submitted
+        best_pct, best_label = res.get("best_pct"), res.get("best_label")
+        if matched:
+            break
+        rows = res.get("rows") or []
+        pick = max(range(len(rows)), key=lambda i: rows[i]["pct"] if rows[i]["pct"] is not None else -1)
+        floor = float(res.get("base_pct") or 0.0)
+        if pick >= len(cands) or rows[pick].get("pct") is None or rows[pick]["pct"] <= floor + 1e-6:
+            break
+        label, text = cands[pick][0], cands[pick][1]
+        if text in seen:
+            break
+        seen.add(text)
+        current = text
+        trail.append({"label": label, "pct": rows[pick]["pct"]})
+    out = {"symbol": symbol, "unit": fn["unit"], "variants": total, "best_pct": best_pct, "best_label": best_label,
+           "steps": trail, "depth": len(trail), "matched": matched, "submitted": submitted, "definition": current}
+    if not matched and apply_best and best_pct is not None and best_pct > search.db_best_pct(fn) + 1e-6:
+        try:
+            helpers, body = search.csource.split_extra(current)
+            out["won"] = search.submit(symbol, body, helpers, fn=fn, improve=True)
+        except common.OutmatchError as e:
+            out["note"] = str(e)[:300]
+    return out
+
+
 def run(fn: dict, only: str = "", cap: int = 160, jobs: int = common.JOBS, submit_match: bool = True,
         apply_best: bool = False, definition: str | None = None) -> dict:
     """Score the catalogue against `fn`'s current definition (or `definition`) and report the ranking."""
     symbol, unit = fn["name"], fn["unit"]
     text = common.source_path(unit).read_text(encoding="utf-8")
-    own, start, end = search.csource.find(text, [], symbol)
+    own, start, end = search.common.definition_span(text, symbol)
     base = definition if definition is not None else (text[start:end] if start >= 0 else "")
     if not base:
         return {"symbol": symbol, "error": f"no definition in src/auto/{unit}.cpp"}

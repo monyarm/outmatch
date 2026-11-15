@@ -64,7 +64,7 @@ def sweep(fn: dict, seconds: float = 120, jobs: int = common.JOBS, submit_match:
           apply_best: bool = False) -> dict:
     """Every carrier against one function; returns the summary `search.judge` printed."""
     text = common.source_path(fn["unit"]).read_text(encoding="utf-8")
-    own, start, end = search.csource.find(text, [], fn["name"])
+    own, start, end = search.common.definition_span(text, fn["name"])
     if start < 0:
         return {"symbol": fn["name"], "note": "no definition", "matched": False}
     definition = text[start:end]

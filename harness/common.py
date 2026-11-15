@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -350,9 +351,28 @@ def best_of(symbol: str) -> tuple[float, str | None]:
     return (float(row[0]), row[1]) if row else (0.0, None)
 
 
+def known_name(symbol: str) -> str | None:
+    """The name the project knows a function by, when it is not the symbol's own spelling."""
+    found = re.search(r"func_([0-9A-Fa-f]{8})", symbol)
+    if not found:
+        return None
+    return (functions().get("names") or {}).get("func_" + found.group(1).upper())
+
+
 def definition_span(source_text: str, symbol: str, name_hint: str | None = None):
+    """Where the function's definition is in `source_text`.
+
+    A constructor or destructor is spelled `Class::Class` / `Class::~Class`, not `func_0040D615`, so the symbol alone
+    often finds nothing even though the definition is right there: fall back to the name the project knows it by.
+    """
     from . import csource
-    return csource.find(source_text, [name_hint] if name_hint else [], symbol)
+    span = csource.find(source_text, [name_hint] if name_hint else [], symbol)
+    if span[1] >= 0:
+        return span
+    hint = name_hint or known_name(symbol)
+    if hint:
+        return csource.find(source_text, [hint], symbol)
+    return span
 
 
 def draftless(min_size: int = 0, limit: int | None = None, exclude_claims: bool = True) -> list[dict]:

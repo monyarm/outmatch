@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import common, draft, csource, search
+from . import common, draft, csource, search, restore
 
 
 def _say(obj: dict) -> None:
@@ -113,6 +113,14 @@ def cmd_msvc(args) -> int:
         return 0
     fn = _function(args.name)
     definition = Path(args.file).read_text(encoding="utf-8") if args.file else None
+    if args.depth > 1:
+        out = tricks.ascend(fn, only=args.only, cap=args.cap, jobs=args.jobs, depth=args.depth,
+                            submit_match=not args.no_submit, apply_best=args.apply, definition=definition)
+        for step in out.get("steps") or []:
+            print(f"{step['pct']:8.3f}  {step['label']}")
+        out.pop("definition", None)
+        _say(out)
+        return 0 if out.get("matched") else 1
     out = tricks.run(fn, only=args.only, cap=args.cap, jobs=args.jobs, submit_match=not args.no_submit,
                      apply_best=args.apply, definition=definition)
     for row in sorted(out.get("rows") or [], key=lambda r: r["pct"], reverse=True):
@@ -147,7 +155,7 @@ def cmd_loop(args) -> int:
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
                         again=args.again, forever=args.forever, idle=args.idle, phases=phases,
                         any_permuted=args.any, min_pct=args.min_pct, order=args.order,
-                        apply_best=args.apply_improvements)
+                        apply_best=args.apply_improvements, depth=args.depth)
     _say({**out, "queued": len(todo)})
     return 0
 
@@ -170,6 +178,22 @@ def cmd_draft(args) -> int:
                           "attempts": fn.get("attempts"), "file": str(path) if args.write else None}))
         if args.print and not args.write:
             print(text)
+    return 0
+
+def cmd_restore(args) -> int:
+    from . import restore as restore_mod
+    todo = restore_mod.missing()
+    if args.symbol:
+        todo = [fn for fn in common.open_functions() if fn["name"] == args.symbol]
+    if args.limit:
+        todo = todo[:args.limit]
+    bad = 0
+    for fn in todo:
+        row = restore_mod.run(fn, submit_now=args.submit, force=args.force)
+        print(json.dumps(row))
+        if row.get("error") or row.get("skipped"):
+            bad += 1
+    print(json.dumps({"missing": len(todo), "skipped_or_failed": bad}))
     return 0
 
 def cmd_report(args) -> int:
@@ -247,6 +271,8 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--phases", default="msvc,levers,pragma,permuter",
                     help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags); flags sweeps the unit "
                          "and applies only a clean winning set")
+    lp.add_argument("--depth", type=int, default=1,
+                    help="msvc phase: catalogue passes per function, each from the previous best body")
     lp.add_argument("--jobs", type=int, default=common.JOBS)
     lp.add_argument("--count", type=int, default=64, help="permuter variants per batch")
     lp.add_argument("--seed", type=int, default=0)
@@ -268,6 +294,12 @@ def main(argv: list[str] | None = None) -> int:
     dr.add_argument("--write", action="store_true", help="save the packets")
     dr.add_argument("--print", action="store_true", help="print each packet")
     dr.set_defaults(func=cmd_draft)
+    rs = sub.add_parser("restore", help="put a recorded best back into its unit when the definition is gone")
+    rs.add_argument("--symbol", default="")
+    rs.add_argument("--limit", type=int, default=0)
+    rs.add_argument("--submit", action="store_true", help="write it back and let the app judge it")
+    rs.add_argument("--force", action="store_true", help="submit even if a neighbour's score would change")
+    rs.set_defaults(func=cmd_restore)
     rp = sub.add_parser("report", help="what the loop has tried (summary, or one function's history)")
     rp.add_argument("symbol", nargs="?", default="")
     rp.add_argument("--limit", type=int, default=40)
@@ -315,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
          "stmt-order"]))
     mv.add_argument("--file", default="", help="base the catalogue on this definition instead of the unit's")
     mv.add_argument("--cap", type=int, default=160, help="maximum variants to score")
+    mv.add_argument("--depth", type=int, default=1,
+                    help="catalogue passes, each starting from the previous best body (2+ chains tricks)")
     mv.add_argument("--jobs", type=int, default=common.JOBS)
     mv.add_argument("--apply", action="store_true", help="submit the best variant even if it is not 100 yet")
     mv.add_argument("--no-submit", action="store_true")

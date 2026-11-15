@@ -251,7 +251,7 @@ def split_out(unit: str, symbol: str, flags: list[str], expect: list[str] | None
     if new_unit in info["units"]:
         return {"symbol": symbol, "unit": unit, "split": None, "why": f"{new_unit} already exists"}
     text = common.source_path(unit).read_text(encoding="utf-8")
-    own, start, end = csource.find(text, [], symbol)
+    own, start, end = common.definition_span(text, symbol)
     if start < 0:
         return {"symbol": symbol, "unit": unit, "split": None, "why": "definition not found"}
     starts = [s for _, s, _ in (csource.find(text, [], e["name"]) for e in entries)]

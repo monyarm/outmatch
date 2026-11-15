@@ -165,7 +165,7 @@ def source_with(unit_text: str, symbol: str, definition: str, helpers: str = "")
     A function with no definition yet (only declared, or used through a member pointer) gets one appended at file
     scope: that is where a first draft goes.
     """
-    own, start, end = csource.find(unit_text, [], symbol)
+    own, start, end = common.definition_span(unit_text, symbol)
     if start < 0:
         return (unit_text.rstrip() + "\n\n" + (helpers.rstrip() + "\n\n" if helpers else "")
                 + definition.rstrip() + "\n")
@@ -184,13 +184,15 @@ def verify(fn: dict, definition: str, helpers: str = "") -> float:
     return common.score(common.target_obj(unit), obj, fn["name"])
 
 
-def submit(symbol: str, definition: str, helpers: str = "", fn: dict | None = None, improve: bool = False) -> dict:
+def submit(symbol: str, definition: str, helpers: str = "", fn: dict | None = None, improve: bool = False,
+           force: bool = False) -> dict:
     """Ask the app to judge (and, on a match, write+commit+record) one function.  Returns its answer.
 
     With `fn`, the finalist is first recompiled in a freshly copied tree; a stale worker tree or a header an agent
     edited since could otherwise claim a match the app then refuses (and a refused attempt takes the `you` claim).
+    `force` skips that gate - a restore is not an improvement claim, it puts a body the app already has back.
     """
-    if fn is not None:
+    if fn is not None and not force:
         want = db_best_pct(fn) if improve else 100.0
         try:
             fresh = verify(fn, definition, helpers)
@@ -204,7 +206,7 @@ def submit(symbol: str, definition: str, helpers: str = "", fn: dict | None = No
     unit = common.unit_of(symbol)
     path = common.source_path(unit)
     text = path.read_text(encoding="utf-8")
-    own, start, end = csource.find(text, [], symbol)
+    own, start, end = common.definition_span(text, symbol)
     if start < 0:
         # a first draft: put the definition (and its helpers) at file scope so the app can find and keep it
         path.write_text(source_with(text, symbol, definition, helpers), encoding="utf-8")
@@ -254,7 +256,7 @@ def search(fn: dict, seconds: float = 120, jobs: int = common.JOBS, count: int =
     started = time.monotonic()
     deadline = started + seconds
     text = common.source_path(unit).read_text(encoding="utf-8")
-    own, start, end = csource.find(text, [], symbol)
+    own, start, end = common.definition_span(text, symbol)
     if start < 0:
         return Outcome(symbol, -1, "", note=f"no definition in src/auto/{unit}.cpp")
     current = text[start:end]
@@ -355,7 +357,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
     """
     symbol, unit = fn["name"], fn["unit"]
     text = common.source_path(unit).read_text(encoding="utf-8")
-    own, start, end = csource.find(text, [], symbol)
+    own, start, end = common.definition_span(text, symbol)
     if current is None and start < 0:
         return {"symbol": symbol, "variants": len(variants), "best_pct": None, "best_label": None,
                 "matched": False, "rows": [], "note": f"no definition in src/auto/{unit}.cpp"}
@@ -367,6 +369,7 @@ def judge(fn: dict, variants: list[tuple[str, str, str]], jobs: int = common.JOB
         current = current if current is not None else text[start:end]
         base = pool.score(source_with(text, symbol, current), symbol)
         out["best_pct"], out["best_label"] = round(base.pct, 3), "current"
+        out["base_pct"] = round(base.pct, 6)
         if base.pct >= 100:
             # the tree already compiles to 100 (an edit the app hasn't measured yet): record it
             out["matched"], out["best_pct"] = True, 100.0
