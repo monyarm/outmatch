@@ -153,10 +153,15 @@ class Pool:
 
 
 def source_with(unit_text: str, symbol: str, definition: str, helpers: str = "") -> str:
-    """The unit's source with `definition` in place of the function (helpers beside it)."""
+    """The unit's source with `definition` in place of the function (helpers beside it).
+
+    A function with no definition yet (only declared, or used through a member pointer) gets one appended at file
+    scope: that is where a first draft goes.
+    """
     own, start, end = csource.find(unit_text, [], symbol)
     if start < 0:
-        raise KeyError(symbol)
+        return (unit_text.rstrip() + "\n\n" + (helpers.rstrip() + "\n\n" if helpers else "")
+                + definition.rstrip() + "\n")
     if helpers:
         helpers = helpers.rstrip() + "\n\n"
     return unit_text[:start] + helpers + definition.rstrip() + "\n" + unit_text[end:]
@@ -190,15 +195,15 @@ def submit(symbol: str, definition: str, helpers: str = "", fn: dict | None = No
             return {"matched": False, "skipped": f"fresh score {fresh:.3f} below {want:.3f}",
                     "fresh_pct": fresh, "text": ""}
     unit = common.unit_of(symbol)
-    if helpers:
+    path = common.source_path(unit)
+    text = path.read_text(encoding="utf-8")
+    own, start, end = csource.find(text, [], symbol)
+    if start < 0:
+        # a first draft: put the definition (and its helpers) at file scope so the app can find and keep it
+        path.write_text(source_with(text, symbol, definition, helpers), encoding="utf-8")
+    elif helpers and helpers.strip() not in text[:start]:
         # the app only accepts one definition through /api/try: put the variant's helpers into the file first
-        path = common.source_path(unit)
-        text = path.read_text(encoding="utf-8")
-        own, start, end = csource.find(text, [], symbol)
-        if start < 0:
-            raise common.OutmatchError(f"{symbol}: definition vanished from {path}")
-        if helpers.strip() not in text[:start]:
-            path.write_text(text[:start] + helpers.rstrip() + "\n\n" + text[start:], encoding="utf-8")
+        path.write_text(text[:start] + helpers.rstrip() + "\n\n" + text[start:], encoding="utf-8")
     res = common.try_function(symbol, definition)
     if not res.get("matched"):
         # a non-match leaves the claim the app gave "you" in place until it expires, and the UI shows the function
