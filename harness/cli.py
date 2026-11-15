@@ -156,7 +156,7 @@ def cmd_loop(args) -> int:
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
                         again=args.again, forever=args.forever, idle=args.idle, phases=phases,
                         any_permuted=args.any, min_pct=args.min_pct, order=args.order,
-                        apply_best=args.apply_improvements, depth=args.depth, beam=args.beam,
+                        apply_best=args.apply_improvements, depth=args.depth, beam=args.beam, cap=args.cap,
                         focus=args.focus != "off")
     _say({**out, "queued": len(todo)})
     return 0
@@ -315,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
                          "and applies only a clean winning set")
     lp.add_argument("--focus", choices=("auto", "off"), default="auto",
                     help="order the catalogue by the observed objdiff diff kinds (default) or run it as listed")
+    lp.add_argument("--cap", type=int, default=160, help="variants per generation")
     lp.add_argument("--beam", type=int, default=1, help="bodies kept per generation (1 = greedy)")
     lp.add_argument("--depth", type=int, default=1,
                     help="msvc phase: catalogue passes per function, each from the previous best body")
