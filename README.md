@@ -202,40 +202,17 @@ The `compiler` phase of `loop` reports the sweep for every candidate it visits.
 
 ## The compilers this project has
 
-As many Visual C++ builds as could be found are installed, from VC6 RTM to 2005 SP1, so the `compiler` phase can try
-each one. **Not all of them are used:** most files build with the default, and a build only gets used by a file when
-something matches with it that matches with nothing closer (the "files" column, as of 2026-11-15).
+Four builds are in use (as of 2026-11-15; 190 source files):
 
 | name in the project | build (`C2.DLL`) | what it is | where it comes from | files |
 |---|---|---|---|---|
-| `6.0` | 12.00.8168 | VC6 RTM | decompdecomp's `msvc` pack | 53 (the CRT tail, units split out for it) |
-| `own-12.0.8447` | 12.00.8447 | VC6 SP3 | OmniBlade `msvc6.3.tar.gz` | 0 |
-| `own-12.0.8799` | 12.00.8799 | VC6 SP4 | OmniBlade `msvc6.4.tar.gz` | 0 |
-| `own-13.0.8876` | 13.00.8876 | VC6 SP4 + Processor Pack | `msvc6.4` + `c2.dll`/intrinsic headers from the SP4 CD's `enu/PP/vcpp.exe` | 0 |
-| `own-12.0.8966` | 12.00.8966 | VC6 SP5 | OmniBlade `msvc6.5.tar.gz` | 0 |
-| **`own-13.0.9044`** | 13.00.9044 | VC6 SP5 + Processor Pack (decomp.me `msvc6.5pp`) | OmniBlade `msvc6.5pp.tar.gz` | **default** |
-| `own-12.0.9782` | 12.00.9782 | VC6 SP6 | OmniBlade `msvc6.6.tar.gz` | 0 |
-| `7.0` | 13.00.9466 | .NET 2002 | decompdecomp's `msvc` pack | 1 |
-| `7.1` | 13.10.3077 | .NET 2003 | decompdecomp's `msvc` pack | 0 |
-| `8.0`, `8.0SP1` | 14.00.50727 | 2005 RTM, SP1 | decompdecomp's `msvc2005` pack | 0 |
+| **`own-13.0.9044`** | 13.00.9044 | VC6 SP5 + Processor Pack (decomp.me `msvc6.5pp`) | [OmniBlade `msvc6.5pp.tar.gz`](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (sha256 `0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e`), registered as an own-copy kit | 134 (the default) |
+| `6.0` | 12.00.8168 | VC6 RTM | decompdecomp's `msvc` pack | 54 (the CRT tail, and the functions split out for it) |
+| `7.0` | 13.00.9466 | .NET 2002 | decompdecomp's `msvc` pack | 1 (`text_0043DE87`) |
+| `own-13.0.9030` | 13.00.9030 | VS.NET 2002 Beta 1 | archive.org `ms-vsnet-b1`: `cl.exe`/`c2.dll` from `vsentd2.iso`, `c1.dll`/`c1xx.dll`, headers and `msvcr70`/`msvcp70` from `vsentd1.iso` (both under `Program Files/Microsoft Visual Studio.NET/Vc7`), plus `mspdb70.dll`; Windows SDK headers the disc lacks from the `7.0` pack | 1 (`text_0041B02C`) |
 
-Not held: the 8943 Processor Pack itself, and the 8830 pre-release (earlier than VS.NET Beta 1's 13.00.9030; nothing on
-archive.org). OmniBlade's tarballs are the
-[`msvcwin9x` release](https://github.com/OmniBlade/decomp.me/releases/tag/msvcwin9x) (decomp.me serves the same as
-`ghcr.io/decompme/compilers/win9x/*`); their sha256s:
-
-| asset | CL / C1 / C1XX / C2 | sha256 |
-|---|---|---|
-| `msvc6.3.tar.gz` | 12.00.8168 / 8472 / 8472 / 8447 | `84f73e718b3671bfd5de3b7764622b07633b572ee826ca3b77602d224c128608` |
-| `msvc6.4.tar.gz` | 12.00.8804 / 8867 / 8867 / 8799 | `6d4ef930390ca7481ae5b63ea3bf00d62e0993cd95f1d6f42ba06bb30f993c57` |
-| `msvc6.5.tar.gz` | 12.00.8804 / 8867 / 8964 / 8966 | `16f639b7961ca74b938532d912d2bb655d5ea08b01dc2f50e4a180774d138169` |
-| `msvc6.5pp.tar.gz` | 12.00.8804 / 8867 / 8964 / **13.00.9044** | `0de4c5dc848d59b8af842eb157ffe8b1d24fba6621b18be67ea9932e219ce14e` |
-| `msvc6.6.tar.gz` | 12.00.8804 / 9782 / 9782 / 9782 | `0a4cd7628a79067ee62dd90d40d2c027221cc46f530e40d92245ec46d550dd4d` |
-
-The SP4 Processor Pack's `c2.dll` (sha256 `1d5c354bfd6e4445e5e2c3df7f108f710b14a9e37ea86d269a7fc49cfe362c93`) is on the
-archive.org item `microsoft-visual-studio-6-sp4-x05-78387-x05-78367d1-2000-microsoft-cd` (a zip of `vs6sp4.mdf`: raw
-2352-byte sectors, keep bytes 16-2064 of each for a plain ISO), inside `enu/PP/vcpp.exe`; its `xmmint_1.h`/`emmint_1.h`
-install as `xmmintrin.h`/`emmintrin.h` (`vcpp.inf`).
+Other builds (VC6 SP3-SP6, the SP4 Processor Pack, 7.1, 2005 RTM and SP1) are installed only so the `compiler` phase can try
+them; the 2026-11-15 sweep of every unit under all of them found nothing more to use.
 
 **Adding one.** Unpack it so `Bin/CL.EXE`, `Bin/c2.dll` and `Include/` sit in one folder (here
 `~/.local/share/decompnet/toolchains/msvc/<name>`), then register it as a "Microsoft Visual C++ (your own copy)" kit:
