@@ -294,6 +294,68 @@ def cmd_try(args) -> int:
     return 0 if verdict.pct >= 100.0 else 1
 
 
+REF_HINT = {
+    "constructor": "an out-of-line constructor stands where the original calls func_X: name the class C_X "
+                   "(typedef the old name to it) and declare its constructor without a body",
+    "import": "the import is decorated (__imp__F@N) where the original's is not: call it through the _imp__F pointer",
+    "data_or_code": "same address, but one side names it func_ and the other D_: use the original's spelling",
+    "unnamed": "a symbol with no address in its name and no `names` entry: rename it or add the name",
+    "other_callee": "the draft calls a different address (a decompilation error, not a naming one)",
+}
+
+
+def ref_kind(mine: str, orig: str) -> str:
+    """Classify one `refers to MINE where the original refers to ORIG` pair from the app's diff."""
+    import re
+    addr = lambda s: (m.group(2).upper() if (m := re.search(r"(func|D)_([0-9A-Fa-f]{8})", s)) else None)
+    if mine.startswith("??0") or mine.startswith("??1"):
+        return "constructor"
+    if mine.startswith("__imp_") and orig.startswith("__imp_"):
+        return "import" if mine.split("@")[0] == orig.split("@")[0] else "other_callee"
+    if addr(mine) is None:
+        return "unnamed"
+    if addr(mine) == addr(orig):
+        return "data_or_code"
+    return "other_callee"
+
+
+def cmd_refs(args) -> int:
+    """Ask the app's own diff (/api/diff, what the UI shows) for every function and list wrong references."""
+    import re
+    import urllib.parse
+    from collections import Counter
+    from concurrent.futures import ThreadPoolExecutor
+    status = {"open": ("open",), "matched": ("matched",), "all": ("open", "matched")}[args.status]
+    names = list(args.symbol) or [r[0] for r in common.query(
+        f"SELECT name FROM functions WHERE project_id=? AND status IN ({','.join('?' * len(status))}) ORDER BY name",
+        common.project_id(), *status)]
+    kinds = set(args.kind or REF_HINT)
+
+    def one(name):
+        try:
+            d = common.api(f"/api/diff?slug={common.SLUG}&name={urllib.parse.quote(name)}")
+        except Exception as e:  # noqa: BLE001 - one bad function must not stop the scan
+            return name, [], str(e)
+        pairs = []
+        for p in d.get("problems") or []:
+            if m := re.fullmatch(r"refers to `(.+?)` where the original refers to `(.+?)`", p):
+                pairs.append((m.group(1), m.group(2)))
+        return name, pairs, d.get("error")
+
+    counts = Counter()
+    with ThreadPoolExecutor(args.jobs) as ex:
+        for name, pairs, error in ex.map(one, names):
+            found = [{"kind": k, "mine": m, "original": o} for m, o in pairs if (k := ref_kind(m, o)) in kinds]
+            if error:
+                counts["error"] += 1
+                _say({"symbol": name, "error": error[:300]})
+            elif found:
+                counts.update(r["kind"] for r in found)
+                _say({"symbol": name, "unit": common.unit_of(name), "refs": found})
+    _say({"checked": len(names), "found": dict(counts), "hints": {k: REF_HINT[k] for k in counts if k in REF_HINT}})
+    return 1 if counts else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="outmatch", description="match functions outside decompdecomp, submit inside it")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -388,6 +450,14 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("file")
     tr.add_argument("--submit", action="store_true", help="send it to the app after the local score")
     tr.set_defaults(func=cmd_try)
+
+    rf = sub.add_parser("refs", help="list references the app's diff says name the wrong symbol (naming problems)")
+    rf.add_argument("symbol", nargs="*", help="only these functions (default: every function with --status)")
+    rf.add_argument("--status", choices=("open", "matched", "all"), default="open")
+    rf.add_argument("--kind", action="append", choices=sorted(REF_HINT),
+                    help="only these kinds (repeatable; default all, other_callee included)")
+    rf.add_argument("--jobs", type=int, default=4)
+    rf.set_defaults(func=cmd_refs)
 
     st = sub.add_parser("status", help="project + app summary")
     st.add_argument("--full", action="store_true", help="print the app's whole /api/state")
