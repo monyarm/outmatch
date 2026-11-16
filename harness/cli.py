@@ -297,7 +297,9 @@ def cmd_try(args) -> int:
 REF_HINT = {
     "constructor": "an out-of-line constructor stands where the original calls func_X: name the class C_X "
                    "(typedef the old name to it) and declare its constructor without a body",
-    "import": "the import is decorated (__imp__F@N) where the original's is not: call it through the _imp__F pointer",
+    "import": "the import is decorated (__imp__F@N) where the delinked original's IAT name is not; usually harmless (a "
+              "matched function stays matched). A `T (__stdcall* _imp__F)(...)` pointer gets the name but can lose the "
+              "register reuse dllimport allows (mov esi,[imp]; call esi), so check the score before keeping it",
     "data_or_code": "same address, but one side names it func_ and the other D_: use the original's spelling",
     "unnamed": "a symbol with no address in its name and no `names` entry: rename it or add the name",
     "other_callee": "the draft calls a different address (a decompilation error, not a naming one)",

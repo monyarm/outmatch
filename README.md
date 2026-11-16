@@ -93,7 +93,7 @@ are saved as C files under `.outmatch/best/` and are never written into `src/` u
 `./outmatch.sh refs [SYMBOL...] [--status open|matched|all] [--kind K]` asks the app's own diff (`/api/diff`, what the
 UI shows under a function) for every function and lists each `refers to X where the original refers to Y`, classified:
 `constructor` (an out-of-line `??0Class` where the original calls `func_X`: name the class `C_X`, typedef the old name to
-it, declare the constructor without a body), `import` (`__imp__F@N` vs the original's undecorated `__imp__F`),
+it, declare the constructor without a body), `import` (`__imp__F@N` vs the delinked original's undecorated `__imp__F`: usually harmless; a `_imp__F` pointer fixes the name but can lose dllimport's register reuse),
 `data_or_code` (the same address spelt `func_` on one side and `D_` on the other), `unnamed` (no address and no `names`
 entry) and `other_callee` (the code calls a different address: a decompilation error). Exits 1 when it finds any.
 
