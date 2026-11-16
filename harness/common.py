@@ -288,9 +288,9 @@ def build_command(unit: str) -> list[str]:
     argv = shlex.split(lines[-1])
     data[unit] = argv
     STATE.mkdir(exist_ok=True)
-    tmp = cache.with_name(f"{cache.name}.{os.getpid()}")
-    tmp.write_text(json.dumps(data, indent=1))
-    tmp.replace(cache)  # atomic: parallel sweeps read it while others add units
+    with tempfile.NamedTemporaryFile("w", dir=cache.parent, prefix=cache.name, delete=False) as fh:
+        fh.write(json.dumps(data, indent=1))  # (a name of its own: threads of one process write it too)
+    Path(fh.name).replace(cache)  # atomic: parallel sweeps read it while others add units
     return argv
 
 
