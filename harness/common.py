@@ -206,6 +206,16 @@ def query_one(sql: str, *args):
     return rows[0] if rows else None
 
 
+def compiler_family(cfg: dict | None = None) -> str:
+    """msvc, agbcc, gcc, mwcc, ido, ... of a project's config (this project's by default): what twins share."""
+    if cfg is None:
+        row = query_one("SELECT config FROM projects WHERE slug=?", SLUG)
+        cfg = json.loads(row[0] or "{}") if row else {}
+    comp = cfg.get("compiler")
+    tc = (comp.get("toolchain", "") if isinstance(comp, dict) else str(comp or "")).lower()
+    return next((f for f in ("agbcc", "msvc", "mwcc", "ido", "gcc") if f in tc), tc.split("/")[0].split("-")[0])
+
+
 def is_msvc() -> bool:
     """Whether the project builds with Visual C++ (its config's compiler: "MSVC/..." for a PC fork, a toolchain id
     with msvc in it otherwise), so the MSVC-only phases (msvc, levers, pragma, flags, compiler) apply."""

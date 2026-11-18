@@ -278,12 +278,14 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
 
 
 def twin_sources() -> list[Path]:
-    """Every project the app knows on this project's platform (this one too: its own duplicates)."""
-    mine = json.loads(common.query_one("SELECT config FROM projects WHERE slug=?", common.SLUG)[0] or "{}")
+    """Every project the app knows built by this project's compiler family (this one too: its own duplicates), that
+    twins can read (PC forks: COFF objects)."""
+    fam = common.compiler_family()
     out = []
     for root, cfg in common.query("SELECT root, config FROM projects"):
         cfg = json.loads(cfg or "{}")
-        if root and cfg.get("kind") == "fork" and cfg.get("platform") == mine.get("platform") and Path(root).is_dir():
+        if (root and cfg.get("kind") == "fork" and cfg.get("platform") == "pc"
+                and common.compiler_family(cfg) == fam and Path(root).is_dir()):
             out.append(Path(root))
     return out
 
