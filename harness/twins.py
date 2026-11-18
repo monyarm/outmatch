@@ -18,7 +18,7 @@ import sqlite3
 import struct
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import common, csource
@@ -162,7 +162,12 @@ def chunks(text: str) -> list[tuple[int, int]]:
     while i < len(masked):
         c = masked[i]
         if depth == 0 and c == "#" and not masked[start:i].strip():
-            end = masked.find("\n", i)
+            end = i
+            while True:  # a #define goes on over lines that end in a backslash
+                end = masked.find("\n", end)
+                if end < 0 or not masked[:end].rstrip(" \t\r").endswith("\\"):
+                    break
+                end += 1
             end = len(masked) if end < 0 else end
             out.append((i, end))
             i = start = end
@@ -185,7 +190,9 @@ def chunks(text: str) -> list[tuple[int, int]]:
 
 
 def _declares(chunk: str) -> str | None:
-    """The name a file-scope declaration introduces (a type, a prototype, a variable)."""
+    """The name a file-scope declaration introduces (a type, a prototype, a variable, a macro)."""
+    if m := re.match(r"#define\s+(\w+)", chunk):
+        return m.group(1)
     if m := TYPE_HEAD.match(chunk):
         if "{" in chunk or chunk.rstrip().endswith(";"):
             return m.group(1)
@@ -193,7 +200,7 @@ def _declares(chunk: str) -> str | None:
         m = re.search(r"(\w+)\s*(?:\[[^\]]*\]\s*)*;\s*$", chunk)
         return m.group(1) if m else None
     head = re.sub(r"__declspec\s*\([^)]*\)", "", csource._blank(chunk).split("{", 1)[0].split("=", 1)[0])
-    if m := re.search(r"\(\s*(?:__\w+\s*)?\*\s*(\w+)\s*\)\s*\(", head):  # a function pointer: (__stdcall* name)(...)
+    if m := re.search(r"\(\s*(?:__\w+\s*)?\*\s*(?:const\s+)?(\w+)\s*\)\s*\(", head):  # a function pointer: (__stdcall* name)(...)
         return m.group(1)
     m = re.search(r"(\w+)\s*(?:\(|\[|;|$)", head.strip())
     return m.group(1) if m else None
@@ -207,7 +214,8 @@ def project_decls(root: Path) -> list[str]:
         text = path.read_text(encoding="utf-8", errors="replace")
         for s, e in chunks(text):
             body = text[s:e]
-            if body.startswith("#") or body.rstrip().endswith("}") and not TYPE_HEAD.match(body):
+            if body.startswith("#") and not body.startswith("#define") or \
+                    not body.startswith("#") and body.rstrip().endswith("}") and not TYPE_HEAD.match(body):
                 continue
             if (name := _declares(body)) and name not in seen:
                 seen.add(name)
@@ -216,20 +224,29 @@ def project_decls(root: Path) -> list[str]:
 
 
 def borrow(other_text: str, span: tuple[int, int], code: str, mine: str, names: dict[str, str],
-           extra: list[str] = ()) -> str:
+           extra: list[str] = ()) -> tuple[str, dict[str, str]]:
     """The declarations from the other file (else `extra`, the rest of its project) that `code` (already renamed)
-    uses and this file doesn't have."""
+    uses and this file doesn't have, and the private names given to structs this file defines otherwise."""
     have = set(re.findall(r"\b\w+\b", csource._blank(mine)))
-    pool = []
+    flat = lambda t: re.sub(r"\s+", " ", csource._blank(t)).strip()
+    my_types = {m.group(1): flat(mine[s:e]) for s, e in chunks(mine)
+                if (m := TYPE_HEAD.match(mine[s:e])) and "{" in mine[s:e]}
+    pool, private = [], {}
     for s, e in chunks(other_text):
         if s >= span[0] and e <= span[1]:
             continue
         body = other_text[s:e]
-        if body.startswith("#") or body.rstrip().endswith("}") and not TYPE_HEAD.match(body):
+        if body.startswith("#") and not body.startswith("#define") or \
+                    not body.startswith("#") and body.rstrip().endswith("}") and not TYPE_HEAD.match(body):
             continue  # a pragma/include or another function: never borrowed
         renamed = apply(body, names)
         name = _declares(renamed)
         if name and name not in have:
+            pool.append((name, renamed))
+        elif name in my_types and "{" in renamed and flat(renamed) != my_types[name]:
+            # this file has its own, other struct of that name: the twin keeps its own under a private name (the
+            # symbol doesn't carry the class: the build names a method by its address)
+            private[name] = name + "_tw"
             pool.append((name, renamed))
     known = {n for n, _ in pool}
     for body in extra:
@@ -249,7 +266,8 @@ def borrow(other_text: str, span: tuple[int, int], code: str, mine: str, names: 
     order = {t: i for i, (_, t) in enumerate(pool)}
     includes = [other_text[s:e] for s, e in chunks(other_text) if other_text[s:e].startswith("#include")
                 and other_text[s:e] not in mine]
-    return "\n\n".join(includes + [t for _, t in sorted(want, key=lambda x: order[x[1]])])
+    private = {k: v for k, v in private.items() if any(n == k for n, _ in want)}
+    return apply("\n\n".join(includes + [t for _, t in sorted(want, key=lambda x: order[x[1]])]), private), private
 
 
 @dataclass
@@ -261,6 +279,12 @@ class Pair:
     code: str        # the renamed definition
     helpers: str     # declarations it brings
     name_entry: tuple[str, str] | None = None  # functions.json `names` entry it needs here (a ctor/dtor's C name)
+    names: dict = field(default_factory=dict)  # their names -> ours, for declarations fetched later
+    source: Path | None = None                # the other project's folder
+    other_unit: str = ""
+    drop: tuple = ()                           # this file's declarations of these names give way to the twin's
+    pin: tuple | None = None                   # (compiler, extra flags) the unit needs for it to match
+    split: tuple | None = None                 # (compiler, extra flags) it matches with in a unit of its own
 
 
 def _other_project(root: Path) -> tuple[int, str]:
@@ -320,13 +344,17 @@ def find_pairs(sources: list[Path], min_size: int = 8) -> tuple[list[Pair], list
                     skipped.append({"symbol": b, "from": a, "skipped": "renamed definition isn't under its symbol"})
                     continue
                 mine_text = common.source_path(mine[b].unit).read_text(encoding="utf-8")
-                pairs.append(Pair(b, mine[b].unit, a, root.name, code, borrow(text, (s, e), code, mine_text, names, decls),
-                                  entry))
+                helpers, private = borrow(text, (s, e), code, mine_text, names, decls)
+                pairs.append(Pair(b, mine[b].unit, a, root.name, apply(code, private), helpers, entry,
+                                  {**names, **private}, root, pa.unit))
                 taken.add(b)
     return pairs, skipped
 
 
 def _unit_text(base: str, items: list[Pair]) -> str:
+    drop = {n for p in items for n in p.drop}
+    if drop:  # this file's own prototypes/externs of those names make way for the twin's
+        base = _without(base, drop)
     text, helpers = base, []
     for p in items:
         _, s, e = common.definition_span(text, p.symbol)
@@ -339,6 +367,68 @@ def _unit_text(base: str, items: list[Pair]) -> str:
                    len(text))
         text = text[:cut] + "\n".join(helpers) + "\n\n" + text[cut:]
     return text
+
+
+def _without(text: str, names: set) -> str:
+    """`text` less its file-scope declarations (never definitions) of `names`."""
+    cut = [(s, e) for s, e in chunks(text) if "{" not in text[s:e] and _declares(text[s:e]) in names]
+    for s, e in reversed(cut):
+        text = text[:s] + text[e:]
+    return text
+
+
+_DECLS: dict[Path, dict[str, str]] = {}
+ERR = re.compile(r"error (C\d+): '([^']+)'")
+
+
+def source_decl(root: Path, name: str) -> str | None:
+    """Where the other project declares `name`: at file scope (headers, sources), else an `extern` inside a body."""
+    if root not in _DECLS:
+        table: dict[str, str] = {}
+        for body in project_decls(root):
+            table.setdefault(_declares(body), body)
+        for path in sorted((root / "src" / "auto").glob("*.cpp")):
+            for m in re.finditer(r"^[ \t]*(extern\b[^;{}()]*?\b(\w+)\s*(?:\[[^\]]*\])?\s*;)", path.read_text(
+                    encoding="utf-8", errors="replace"), re.M):
+                table.setdefault(m.group(2), m.group(1))
+        _DECLS[root] = table
+    return _DECLS[root].get(name)
+
+
+def repair(p: Pair, base: str, run) -> tuple[Pair, dict]:
+    """Compile p in the unit, fixing what the compiler names: an undeclared name gets the other project's
+    declaration, a name this file declares otherwise gets the twin's instead. (p as it compiled, its scores)"""
+    back = {v: k for k, v in p.names.items()}
+    for _ in range(6):
+        try:
+            return p, run(_unit_text(base, [p]))
+        except common.OutmatchError as e:
+            errs = ERR.findall(str(e))
+        add, drop = [], set(p.drop)
+        for code, name in errs:
+            if code == "C2065" and (d := source_decl(p.source, back.get(name, name))):
+                add.append(apply(d, p.names))
+            elif code in ("C2556", "C2371", "C2040", "C2373", "C2372") and name not in drop:
+                drop.add(name)
+                if d := source_decl(p.source, back.get(name, name)):
+                    add.append(apply(d, p.names))
+        add = [a for a in dict.fromkeys(add) if a not in p.helpers]
+        if not add and drop == set(p.drop):
+            raise common.OutmatchError("unrepaired: " + "; ".join(f"{c} {n}" for c, n in errs[:3]))
+        p = replace(p, helpers="\n\n".join([*add, p.helpers]) if add else p.helpers, drop=tuple(sorted(drop)))
+    raise common.OutmatchError("unrepaired after 6 rounds")
+
+
+def their_build(p: Pair) -> tuple[str, list[str]]:
+    """The compiler and per-file flags the other project builds the twin's file with."""
+    cfg = next((p.source / "config").glob("*/functions.json")).parent
+    key = f"src/auto/{p.other_unit}.cpp"
+    comp = json.loads((cfg / "file_compilers.json").read_text()).get(key) if (cfg / "file_compilers.json").is_file() else None
+    if not comp:
+        m = re.search(r'^MSVC_VERSION = "([^"]+)"', (p.source / "tools" / "configure.py").read_text(), re.M)
+        comp = m.group(1) if m else common.default_compiler()
+    flags = json.loads((cfg / "file_flags.json").read_text()).get(key, []) if (cfg / "file_flags.json").is_file() else []
+    return comp, list(flags)
 
 
 def score_unit(unit: str, items: list[Pair], slot: int) -> dict[str, float]:
@@ -355,20 +445,48 @@ def score_unit(unit: str, items: list[Pair], slot: int) -> dict[str, float]:
         before = {k for k, v in run(base).items() if v is not None and v >= 99.999}
     except common.OutmatchError:
         before = set()
+    ok = lambda sc: {k for k, v in sc.items() if v is not None and v >= 99.999}
     results: dict[str, float] = {}
     try:
         after = run(_unit_text(base, items))
-        if not (before - {k for k, v in after.items() if v is not None and v >= 99.999}):
-            return {p.symbol: after.get(p.symbol) or 0.0 for p in items}
+        if not (before - ok(after)):
+            results = {p.symbol: after.get(p.symbol) or 0.0 for p in items}
     except common.OutmatchError:
         pass
-    for p in items:  # some twin breaks the build (or a neighbour): each on its own
+    mine = (common.file_compilers().get(f"src/auto/{unit}.cpp") or common.default_compiler(),
+            common.file_flags().get(f"src/auto/{unit}.cpp", []))
+    for i, p in enumerate(items):  # each twin short of 100 on its own: repaired, then under the other's build
+        if results.get(p.symbol, 0) >= 99.999:
+            continue
         try:
-            got = run(_unit_text(base, [p]))
-            lost = before - {k for k, v in got.items() if v is not None and v >= 99.999}
-            results[p.symbol] = -2.0 if lost else (got.get(p.symbol) or 0.0)
+            p, got = repair(p, base, run)
         except common.OutmatchError:
             results[p.symbol] = -1.0
+            continue
+        items[i] = p
+        pct = got.get(p.symbol) or 0.0
+        if before - ok(got):
+            if pct >= 99.999:  # its declarations cost a neighbour here: alone in a unit they cost nothing
+                items[i] = replace(p, split=(mine[0], []))
+            results[p.symbol] = -2.0
+            continue
+        if pct < 99.999 and p.source and (theirs := their_build(p)) != mine:
+            comp, flags = theirs
+            try:
+                alt = common.scores(target, common.scratch_compile(
+                    root, unit, _unit_text(base, [p]), out_rel, compiler=comp,
+                    extra=[f for f in flags if f not in mine[1]]))
+                alt_before = ok(common.scores(target, common.scratch_compile(
+                    root, unit, base, out_rel, compiler=comp, extra=[f for f in flags if f not in mine[1]])))
+                extra = [f for f in flags if f not in mine[1]]
+                if (alt.get(p.symbol) or 0) >= 99.999 and not (before - ok(alt)) and before <= alt_before | ok(alt):
+                    items[i] = p = replace(p, pin=(comp, extra))
+                    pct = 100.0
+                elif (alt.get(p.symbol) or 0) >= 99.999:  # the other build costs a neighbour: a unit of its own
+                    items[i] = p = replace(p, split=(comp, extra))
+            except common.OutmatchError:
+                pass
+        results[p.symbol] = pct
     return results
 
 
@@ -379,23 +497,98 @@ def _add_names(path: Path, entries: dict[str, str]) -> None:
     path.write_text(json.dumps(info, indent=1) + ("\n" if text.endswith("\n") else ""), encoding="utf-8")
 
 
+import threading as _threading
+_PIN_LOCK = _threading.Lock()
+
+
+def apply_pin(p: Pair) -> None:
+    """Build p's unit with the compiler (and flags) its twin's file has: file_compilers.json / file_flags.json,
+    which the app's build reads (scoring already showed every match in the unit keeps)."""
+    comp, flags = p.pin
+    key = f"src/auto/{p.unit}.cpp"
+    with _PIN_LOCK:
+        path = common.FILE_COMPILERS
+        table = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+        want = None if comp == common.default_compiler() else comp
+        if table.get(key) != want:
+            table.pop(key, None) if want is None else table.__setitem__(key, want)
+            path.write_text(json.dumps(table, indent=2) + "\n", encoding="utf-8")
+        if flags:
+            ff = common.file_flags()
+            ff[key] = sorted(set(ff.get(key, [])) | set(flags))
+            common.save_file_flags(ff)
+        common.log("twin-pin", unit=p.unit, compiler=comp, flags=flags)
+
+
+def _wait_check() -> None:
+    job = common.check_project().get("job")
+    while job and common.api(f"/api/job?id={job}").get("state") == "running":
+        time.sleep(3)
+
+
+def split_and_try(p: Pair) -> dict:
+    """Put p in its unit, move it into a unit of its own (flags.split_out) built as p.split says, and try it.
+    Anything short of a match puts every file this touched back as it was."""
+    from . import flags as fl
+    paths = [common.FUNCTIONS_JSON, common.FILE_FLAGS, common.FILE_COMPILERS, common.source_path(p.unit)]
+    snap = {path: path.read_text(encoding="utf-8") for path in paths if path.is_file()}
+    new_path = None
+
+    def undo(why: str) -> dict:
+        for path in paths:
+            if path in snap:
+                path.write_text(snap[path], encoding="utf-8")
+            elif path.is_file():
+                path.unlink()
+        if new_path is not None:
+            new_path.unlink(missing_ok=True)  # the unit this split made, nothing else
+        common._functions = None
+        _wait_check()
+        return {"matched": False, "why": why[:300]}
+
+    comp, extra = p.split
+    common.source_path(p.unit).write_text(_unit_text(snap[common.source_path(p.unit)], [p]), encoding="utf-8")
+    try:
+        res = fl.split_out(p.unit, p.symbol, [*fl.command_flags(p.unit), *extra], [p.symbol])
+    except common.OutmatchError as e:
+        return undo(f"split failed: {e}")
+    if not res.get("split"):
+        return undo(res.get("why") or "split failed")
+    new_path = common.source_path(res["split"])
+    apply_pin(replace(p, unit=res["split"], pin=(comp, [])))
+    _wait_check()
+    try:
+        out = common.try_function(p.symbol, p.code)
+    except common.OutmatchError as e:
+        out = {"matched": False, "text": str(e)}
+    if not out.get("matched"):
+        common.release(p.symbol)
+        return undo("app: " + str(out.get("text", out)))
+    common.log("twin-split", symbol=p.symbol, unit=res["split"], compiler=comp, flags=extra)
+    return {"matched": True, "unit": res["split"]}
+
+
 def submit_one(p: Pair, slot) -> dict:
     """/api/try one twin with its declarations written into the unit first (where _unit_text puts them). The app
     undoes only its definition on a miss: the declarations come back out here, so a miss leaves the file as it was."""
     path = common.source_path(p.unit)
     before = path.read_text(encoding="utf-8")
     ours = _unit_text(before, [p])
+    pin = {"compiler": p.pin[0], "extra": p.pin[1]} if p.pin else {}
     try:  # earlier matches in this unit change it (their declarations): score again as it is now
         n = slot.get()
         try:
             got = common.scores(common.target_obj(p.unit), common.scratch_compile(
-                common.make_scratch(p.unit, common.slot(n)), p.unit, ours, f"build/{common.VERSION}/src/auto/{p.unit}.obj"))
+                common.make_scratch(p.unit, common.slot(n)), p.unit, ours, f"build/{common.VERSION}/src/auto/{p.unit}.obj",
+                **pin))
         finally:
             slot.put(n)
         if not (got.get(p.symbol) or 0) >= 99.999:
             return {"matched": False, "text": f"no longer exact in the unit as it is now ({got.get(p.symbol)})"}
     except common.OutmatchError as e:
         return {"matched": False, "text": "no longer compiles in the unit as it is now: " + str(e)[-200:]}
+    if p.pin:
+        apply_pin(p)
     path.write_text(ours, encoding="utf-8")
     try:
         res = common.try_function(p.symbol, p.code)
@@ -475,6 +668,8 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
                 if status and status[0] != "open":
                     row["skipped"] = f"already {status[0]}"  # matched meanwhile (autopilot, an agent)
                 elif submit:
+                    if p.pin:
+                        row["pin"] = p.pin
                     res = submit_one(p, slots)
                     row["matched"] = bool(res.get("matched"))
                     if not row["matched"]:
@@ -487,6 +682,17 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
     with ThreadPoolExecutor(max(1, jobs)) as ex:
         for fut in as_completed([ex.submit(unit_work, u) for u in by_unit]):
             fut.result()
+    splits = [p for u in by_unit for p in by_unit[u] if p.split]
+    if submit:
+        for p in splits:  # one at a time: a split reconfigures the project
+            status = common.query_one("SELECT status FROM functions WHERE project_id=? AND name=?", pid, p.symbol)
+            if status and status[0] != "open":
+                continue
+            row = {"symbol": p.symbol, "from": f"{p.origin}:{p.other}", "split": p.split, **split_and_try(p)}
+            tally["matched"] += bool(row.get("matched"))
+            say(json.dumps(row))
+    if submit and tally["exact"]:  # a rejected try leaves the app's last object of that unit built from it: re-read
+        _wait_check()
     matched, exact = tally["matched"], tally["exact"]
     summary = {"pairs": len(pairs), "exact_here": exact, "matched": matched, "skipped": len(skipped)}
     say(json.dumps(summary))
@@ -506,4 +712,8 @@ if __name__ == "__main__":  # self-check of the pieces that don't need a project
     assert _declares('extern "C" void (__stdcall* _imp__Enter)(void* cs);') == "_imp__Enter"
     assert _declares('extern "C" __declspec(dllimport) void __stdcall Enter(void* p);') == "Enter"
     assert widen({"func_0044EFDA": "func_0044FD0A"}, "void _func_0044EFDA(int)")["_func_0044EFDA"] == "_func_0044FD0A"
+    assert _declares('extern "C" int (__stdcall* const _imp__P)(void* m);') == "_imp__P"
+    m = "#define D(s) if (s) { \\\n  f(); \\\n}\nint g;\n"
+    assert [m[a:b].split()[0] for a, b in chunks(m)] == ["#define", "int"], chunks(m)
+    assert _declares("#define DEQ(s) x") == "DEQ"
     print("ok")
