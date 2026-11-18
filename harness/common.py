@@ -457,7 +457,7 @@ def log(kind: str, **fields) -> None:
 
 
 def best_of(symbol: str) -> tuple[float, str | None]:
-    row = query_one("SELECT best_score,best_source FROM functions WHERE project_id=1 AND name=?", symbol)
+    row = query_one("SELECT best_score,best_source FROM functions WHERE project_id=? AND name=?", project_id(), symbol)
     return (float(row[0]), row[1]) if row else (0.0, None)
 
 

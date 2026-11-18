@@ -211,13 +211,20 @@ def submit(symbol: str, definition: str, helpers: str = "", fn: dict | None = No
     path = common.source_path(unit)
     text = path.read_text(encoding="utf-8")
     own, start, end = common.definition_span(text, symbol)
+    written = None
     if start < 0:
         # a first draft: put the definition (and its helpers) at file scope so the app can find and keep it
-        path.write_text(source_with(text, symbol, definition, helpers), encoding="utf-8")
+        written = source_with(text, symbol, definition, helpers)
     elif helpers and helpers.strip() not in text[:start]:
         # the app only accepts one definition through /api/try: put the variant's helpers into the file first
-        path.write_text(text[:start] + helpers.rstrip() + "\n\n" + text[start:], encoding="utf-8")
+        written = text[:start] + helpers.rstrip() + "\n\n" + text[start:]
+    if written is not None:
+        path.write_text(written, encoding="utf-8")
+    before = common.best_of(symbol)[0] if written is not None and start >= 0 else None
     res = common.try_function(symbol, definition)
+    if not res.get("matched") and written is not None and start >= 0 and path.read_text(encoding="utf-8") == written \
+            and common.best_of(symbol)[0] == before:
+        path.write_text(text, encoding="utf-8")  # the app undid only its edit and kept nothing: the helpers go too
     if not res.get("matched"):
         # a non-match leaves the claim the app gave "you" in place until it expires, and the UI shows the function
         # as being worked on: give it back
