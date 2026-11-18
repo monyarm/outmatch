@@ -765,10 +765,10 @@ def seed_one(p: Pair, pct: float) -> bool:
     except common.OutmatchError:
         pass
     common.release(p.symbol)
-    now = path.read_text(encoding="utf-8")
-    if p.code.strip() in now:
-        return True  # kept: its declarations stay with it
-    if now == ours:
+    after = common.function_by_name(p.symbol)
+    if after and srch.db_best_pct(after) > srch.db_best_pct(fn) + 1e-6:
+        return True  # the app took it as the best: its declarations stay with it
+    if path.read_text(encoding="utf-8") == ours:  # the app undid only its own edit: ours goes too
         path.write_text(before, encoding="utf-8")
     return False
 
