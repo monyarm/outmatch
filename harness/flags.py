@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from . import common
 
 LEVELS = ("/O1", "/O2", "/Ox", "/Os", "/Ot")
-EXTRAS = ("/Oy-", "/Ob1", "/Ob2", "/Og", "/Oi", "/Oa", "/Ow", "/Op", "/Gf", "/Gy", "/GX-", "/G6")
+EXTRAS = ("/Oy-", "/Ob1", "/Ob2", "/Og", "/Oi", "/Oa", "/Ow", "/Op", "/Gf", "/Gy", "/GX-", "/G6", "/QIfist")
 
 
 # ------------------------------------------------------------------ flag vectors
@@ -63,7 +63,7 @@ def candidate_sets(unit: str) -> list[tuple[str, list[str]]]:
             seen.add(tuple(flags))
             out.append((extra, flags))
     for level in ("/O1", "/O2"):
-        for extra in ("/Oy-", "/Ob1", "/Ob2"):
+        for extra in ("/Oy-", "/Ob1", "/Ob2", "/QIfist"):
             flags = [*base, level, extra]
             if tuple(flags) not in seen:
                 seen.add(tuple(flags))
