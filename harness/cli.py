@@ -484,6 +484,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stop", action="store_true")
     ap.add_argument("--status", action="store_true")
 
+    st = sub.add_parser("stubs", help="adjustor thunks, jump stubs and padding among open functions (--write: set aside)")
+    st.add_argument("--write", action="store_true")
+    st.set_defaults(func=lambda a: __import__("harness.stubs", fromlist=["main"]).main(["--write"] if a.write else []))
+
     tw = sub.add_parser("twins", help="match open functions from identical matched code in other projects")
     tw.add_argument("--from", dest="source", action="append", required=True,
                     help="another decompdecomp project folder (repeatable)")
