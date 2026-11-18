@@ -227,7 +227,7 @@ def cmd_restore(args) -> int:
 def cmd_twins(args) -> int:
     from . import twins
     twins.run([Path(p) for p in args.source], jobs=args.jobs, submit=not args.no_submit, min_size=args.min_size,
-              seed=not args.no_seed, polish=args.polish)
+              seed=not args.no_seed, polish=args.polish, near=args.near)
     return 0
 
 def cmd_stale(args) -> int:
@@ -490,11 +490,13 @@ def main(argv: list[str] | None = None) -> int:
 
     tw = sub.add_parser("twins", help="match open functions from identical matched code in other projects")
     tw.add_argument("--from", dest="source", action="append", required=True,
-                    help="another decompdecomp project folder (repeatable)")
+                    help="another decompdecomp project folder (repeatable; . for the game's own duplicates)")
     tw.add_argument("--jobs", type=int, default=common.JOBS)
     tw.add_argument("--min-size", type=int, default=8)
     tw.add_argument("--no-submit", action="store_true", help="score only")
     tw.add_argument("--no-seed", action="store_true", help="don't make a near twin the function's best attempt")
+    tw.add_argument("--near", type=float, default=0, metavar="RATIO",
+                    help="also pair functions whose masked bytes are this alike (e.g. 0.85), not only identical")
     tw.add_argument("--polish", type=float, default=0, metavar="SECONDS",
                     help="then run the permuter this long on each twin it seeded")
     tw.set_defaults(func=cmd_twins)

@@ -36,6 +36,7 @@ class Print:
     refs: list[str]
     unit: str
     size: int
+    code: bytes = b""  # masked bytes (near twins compare these)
 
 
 def c_name(symbol: str) -> str:
@@ -87,7 +88,7 @@ def prints(root: Path, version: str) -> dict[str, Print]:
             # a label or a section-relative literal: by its place, the same in both twins
             refs = [f"$L+{value:X}" if name.startswith((".", "$")) or not name else c_name(name)
                     for _, _, name, _, value in relocs]
-            out[owner] = Print(key, refs, unit, len(raw))
+            out[owner] = Print(key, refs, unit, len(raw), bytes(code))
     return out
 
 
@@ -148,6 +149,57 @@ def address_map(theirs: dict[str, Print], mine: dict[str, Print]) -> dict[str, s
         for hx, hy in hexes.items():
             out.setdefault(f"{prefix}_{hx}", f"{prefix}_{hy}")
     return out
+
+
+def near_renames(a: Print, b: Print, a_name: str, b_name: str) -> dict[str, str]:
+    """renames() for code that is close, not identical: the relocations aligned in order (difflib), each aligned
+    pair of address names renamed; a pair that disagrees with an earlier one is left out, not fatal."""
+    import difflib
+    kind = lambda r: "$L" if r.startswith("$L") else (ADDR_NAME.search(r).group(0).split("_")[0]
+                                                      if ADDR_NAME.search(r) else r)
+    out: dict[str, str] = {}
+    pairs = [(a_name, b_name)]
+    sm = difflib.SequenceMatcher(None, [kind(r) for r in a.refs], [kind(r) for r in b.refs], autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag in ("equal", "replace") and i2 - i1 == j2 - j1:
+            pairs += zip(a.refs[i1:i2], b.refs[j1:j2])
+    for x, y in pairs:
+        if x == y or x.startswith("$L") or y.startswith("$L"):
+            continue
+        xs, ys = ADDR_NAME.findall(x), ADDR_NAME.findall(y)
+        if xs and len(xs) == len(ys):
+            for p, q in zip(xs, ys):
+                if p.split("_")[0] == q.split("_")[0]:
+                    out.setdefault(p, q)
+        elif IDENT.match(x) and IDENT.match(y):
+            out.setdefault(x, y)
+    return {k: v for k, v in out.items() if k != v}
+
+
+def near_candidates(mine: dict[str, Print], wanted: set[str], theirs: dict[str, Print], matched: list[str],
+                    ratio: float) -> dict[str, tuple[float, str]]:
+    """For each wanted function here, the matched one there whose masked bytes are most alike (>= ratio)."""
+    import difflib
+    pool = sorted(((theirs[a].size, a) for a in matched if a in theirs and theirs[a].code), key=lambda x: x[0])
+    sizes = [x[0] for x in pool]
+    import bisect
+    best: dict[str, tuple[float, str]] = {}
+    for b in wanted:
+        pb = mine[b]
+        lo, hi = bisect.bisect_left(sizes, pb.size * ratio), bisect.bisect_right(sizes, pb.size / ratio)
+        sm = difflib.SequenceMatcher(None, autojunk=False)
+        sm.set_seq2(pb.code)
+        top = (0.0, "")
+        for _, a in pool[lo:hi]:
+            sm.set_seq1(theirs[a].code)
+            if sm.real_quick_ratio() < ratio or sm.quick_ratio() < ratio:
+                continue
+            r = sm.ratio()
+            if r > top[0]:
+                top = (r, a)
+        if top[0] >= ratio:
+            best[b] = top
+    return best
 
 
 def apply(text: str, names: dict[str, str]) -> str:
@@ -296,7 +348,7 @@ def _other_project(root: Path) -> tuple[int, str]:
     raise common.OutmatchError(f"{root} is not a decompdecomp project")
 
 
-def find_pairs(sources: list[Path], min_size: int = 8) -> tuple[list[Pair], list[dict]]:
+def find_pairs(sources: list[Path], min_size: int = 8, near: float = 0) -> tuple[list[Pair], list[dict]]:
     """Every open function here with a matched twin in one of `sources`, its C made ready (or why not)."""
     pid = common.project_id()
     mine = prints(common.ROOT, common.VERSION)
@@ -313,42 +365,59 @@ def find_pairs(sources: list[Path], min_size: int = 8) -> tuple[list[Pair], list
         info = json.loads((root / "config" / over / "functions.json").read_text(encoding="utf-8"))
         names_there = info.get("names") or {}
         matched = [n for (n,) in common.query("SELECT name FROM functions WHERE project_id=? AND status='matched'", opid)]
-        world = address_map(theirs, mine)
+        world = {} if root.resolve() == common.ROOT.resolve() else address_map(theirs, mine)  # itself: own names
         texts: dict[str, str] = {}
         decls = project_decls(root)
+        def make(a, b, own, near=None):
+            pa = theirs[a]
+            if pa.unit not in texts:
+                path = root / "src" / "auto" / f"{pa.unit}.cpp"
+                texts[pa.unit] = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+            text = texts[pa.unit]
+            hint = names_there.get(m.group(0)) if (m := ADDR_NAME.search(c_name(a))) else None
+            _, s, e = csource.find(text, [hint] if hint else [], a)
+            if s < 0:
+                skipped.append({"symbol": b, "from": a, "skipped": "no definition in its source"})
+                return
+            if (hint and "::" in hint and not ADDR_NAME.search(hint) and root.resolve() == common.ROOT.resolve()
+                    and (mb := ADDR_NAME.search(c_name(b)))):
+                # a ctor/dtor twin in the same game is another class with the same layout, not that class again
+                own = {**own, hint.split("::")[0].lstrip("~"): "C_" + mb.group(0).split("_")[-1]}
+            names = widen({**world, **widen(own, text)}, text)  # its own say wins; the map keeps shared structs alike
+            for k, v in list(names.items()):  # the source's C calls an address by its real name: rename that too
+                real = names_there.get(k.lstrip("_"))
+                if real and IDENT.match(real) and real not in names:
+                    mine_real = names_here.get(v.lstrip("_"))
+                    names[real] = mine_real if mine_real and IDENT.match(mine_real) else v.lstrip("_")
+            code = apply(text[s:e], names)
+            key_b = m.group(0).lstrip("_") if (m := ADDR_NAME.search(c_name(b))) else None
+            hint_b, entry = names_here.get(key_b) if key_b else None, None
+            if hint_b is None and hint and key_b:  # theirs is `Class::~Class` by its names entry: so is ours
+                hint_b, entry = apply(hint, names), (key_b, apply(hint, names))
+            if csource.find(code, [hint_b] if hint_b else [], b)[1] < 0:
+                skipped.append({"symbol": b, "from": a, "skipped": "renamed definition isn't under its symbol"})
+                return
+            mine_text = common.source_path(mine[b].unit).read_text(encoding="utf-8")
+            helpers, private = borrow(text, (s, e), code, mine_text, names, decls)
+            pairs.append(Pair(b, mine[b].unit, a, root.name + (f"~{near:.2f}" if near else ""), apply(code, private),
+                              helpers, entry, {**names, **private}, root, pa.unit))
+            taken.add(b)
+
         for a in matched:
             pa = theirs.get(a)
             for b in (wanted.get(pa.key, []) if pa else []):
-                if b in taken:
+                if b in taken or b == a:
                     continue
                 names = renames(pa, mine[b], c_name(a), c_name(b))
                 if names is None:
                     skipped.append({"symbol": b, "from": a, "skipped": "relocations don't pair up name for name"})
                     continue
-                own = names
-                if pa.unit not in texts:
-                    path = root / "src" / "auto" / f"{pa.unit}.cpp"
-                    texts[pa.unit] = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
-                text = texts[pa.unit]
-                hint = names_there.get(m.group(0)) if (m := ADDR_NAME.search(c_name(a))) else None
-                _, s, e = csource.find(text, [hint] if hint else [], a)
-                if s < 0:
-                    skipped.append({"symbol": b, "from": a, "skipped": "no definition in its source"})
-                    continue
-                names = widen({**world, **widen(own, text)}, text)  # its own say wins; the map keeps shared structs alike
-                code = apply(text[s:e], names)
-                key_b = m.group(0).lstrip("_") if (m := ADDR_NAME.search(c_name(b))) else None
-                hint_b, entry = names_here.get(key_b) if key_b else None, None
-                if hint_b is None and hint and key_b:  # theirs is `Class::~Class` by its names entry: so is ours
-                    hint_b, entry = apply(hint, names), (key_b, apply(hint, names))
-                if csource.find(code, [hint_b] if hint_b else [], b)[1] < 0:
-                    skipped.append({"symbol": b, "from": a, "skipped": "renamed definition isn't under its symbol"})
-                    continue
-                mine_text = common.source_path(mine[b].unit).read_text(encoding="utf-8")
-                helpers, private = borrow(text, (s, e), code, mine_text, names, decls)
-                pairs.append(Pair(b, mine[b].unit, a, root.name, apply(code, private), helpers, entry,
-                                  {**names, **private}, root, pa.unit))
-                taken.add(b)
+                make(a, b, names)
+        if near:  # close, not identical: the most alike matched function's C as the start
+            rest = {b for b in open_ if b in mine and b not in taken and mine[b].size >= max(min_size, 16)}
+            for b, (r, a) in sorted(near_candidates(mine, rest, theirs, matched, near).items()):
+                if b != a and b not in taken:
+                    make(a, b, near_renames(theirs[a], mine[b], c_name(a), c_name(b)), r)
     return pairs, skipped
 
 
@@ -743,7 +812,7 @@ def submit_one(p: Pair, slot) -> dict:
 
 
 def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_size: int = 8,
-        seed: bool = True, polish: float = 0, say=lambda line: print(line, flush=True)) -> dict:
+        seed: bool = True, polish: float = 0, near: float = 0, say=lambda line: print(line, flush=True)) -> dict:
     """Score every twin unit by unit (in parallel) and submit each unit's 100s as soon as it is scored."""
     import fcntl
     import queue
@@ -755,7 +824,7 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         raise common.OutmatchError("another `twins` run is working on this project (they'd share scratch trees)")
-    pairs, skipped = find_pairs(sources, min_size)
+    pairs, skipped = find_pairs(sources, min_size, near)
     for s in skipped:
         say(json.dumps(s))
     by_unit: dict[str, list[Pair]] = {}
