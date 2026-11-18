@@ -874,7 +874,7 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
     for p in pairs:
         by_unit.setdefault(p.unit, []).append(p)
     say(json.dumps({"pairs": len(pairs), "units": len(by_unit), "skipped": len(skipped)}))
-    entries = dict(p.name_entry for p in pairs if p.name_entry)
+    entries = {k: v for k, v in (p.name_entry for p in pairs if p.name_entry) if v != k}  # (func_X: func_X says nothing)
     slots: queue.Queue[int] = queue.Queue()
     for k in range(max(1, jobs)):
         slots.put(300 + k)  # one scratch tree per worker, never two units in one at once
