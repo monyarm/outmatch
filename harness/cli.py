@@ -7,6 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+if sys.argv[1:2] == ["autopilot"]:  # before common: `autopilot --all` runs outside any project
+    from .autopilot import main as _autopilot
+    sys.exit(_autopilot(sys.argv[2:]))
+
 from . import common, draft, csource, search, restore
 
 
@@ -218,6 +222,11 @@ def cmd_restore(args) -> int:
         if row.get("error") or row.get("skipped"):
             bad += 1
     print(json.dumps({"missing": len(todo), "skipped_or_failed": bad}))
+    return 0
+
+def cmd_twins(args) -> int:
+    from . import twins
+    twins.run([Path(p) for p in args.source], jobs=args.jobs, submit=not args.no_submit, min_size=args.min_size)
     return 0
 
 def cmd_stale(args) -> int:
@@ -468,6 +477,19 @@ def main(argv: list[str] | None = None) -> int:
     rl = sub.add_parser("release", help="give a claim back")
     rl.add_argument("name")
     rl.set_defaults(func=cmd_release)
+
+    ap = sub.add_parser("autopilot", help="start (default), --stop or --status the app's autopilot")
+    ap.add_argument("--all", action="store_true", help="every project the app knows, not this one")
+    ap.add_argument("--stop", action="store_true")
+    ap.add_argument("--status", action="store_true")
+
+    tw = sub.add_parser("twins", help="match open functions from identical matched code in other projects")
+    tw.add_argument("--from", dest="source", action="append", required=True,
+                    help="another decompdecomp project folder (repeatable)")
+    tw.add_argument("--jobs", type=int, default=common.JOBS)
+    tw.add_argument("--min-size", type=int, default=8)
+    tw.add_argument("--no-submit", action="store_true", help="score only")
+    tw.set_defaults(func=cmd_twins)
 
     fl = sub.add_parser("flags", help="sweep compiler flags per unit")
     fl.add_argument("--unit")

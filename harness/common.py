@@ -155,7 +155,7 @@ def unit_of(symbol: str) -> str:
     for name, fns in functions()["units"].items():
         if any(f["name"] == symbol for f in fns):
             return name
-    row = query_one("SELECT meta FROM functions WHERE project_id=1 AND name=?", symbol)
+    row = query_one("SELECT meta FROM functions WHERE project_id=? AND name=?", project_id(), symbol)
     if row and row[0]:
         meta = json.loads(row[0])
         src = meta.get("source")
