@@ -228,7 +228,7 @@ def tail_range(hits) -> int | None:
     return addrs[best] if len(addrs) - best >= 0.8 * len(addrs) else None
 
 
-def write(hits, range_from: int | None = None) -> dict:
+def write(hits, range_from: int | None = None, tail: bool = True) -> dict:
     """Merge hits into set_aside.json and functions.json's names; returns what changed.
 
     Two kinds of entry: each proven function by symbol with the library object it came from, and one `ranges`
@@ -258,7 +258,7 @@ def write(hits, range_from: int | None = None) -> dict:
         aside[hit["name"]] = (f"MSVC static library — {hit['lib']} ({hit['member']}): {hit['symbol']}"
                               + (f" [builds {', '.join(hit['builds'])}]" if hit.get("builds") else ""))
         added_aside += 1
-    start = range_from if range_from is not None else tail_range(hits)
+    start = range_from if range_from is not None else tail_range(hits) if tail else None
     end = max((fn["addr"] + fn["size"] for unit in info["units"].values() for fn in unit), default=0)
     if start is not None:
         ranges = [r for r in (aside.get("ranges") or []) if not str(r.get("why", "")).startswith("MSVC 6.0")]
@@ -283,6 +283,9 @@ def main(argv=None) -> int:
     parser.add_argument("--only", default=",".join(DEFAULT_LIBS), help="comma-separated library names, or all")
     parser.add_argument("--write", action="store_true", help="update set_aside.json and functions.json")
     parser.add_argument("--range-from", default="", help="hex address the library block at the end starts at")
+    parser.add_argument("--no-range", action="store_true", help="only the proven functions, no tail range entry")
+    parser.add_argument("--open-only", action="store_true", help="leave functions that already match from C alone")
+    parser.add_argument("--app", action="store_true", help="with --write: also set each one aside in the app")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     libs = [x.strip() for x in args.only.split(",") if x.strip()]
@@ -303,8 +306,22 @@ def main(argv=None) -> int:
     out = common.STATE / "libmatch.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"hits": hits, "ambiguous": ambiguous}, indent=1))
+    if args.open_only:
+        still = {n for (n,) in common.query("SELECT name FROM functions WHERE project_id=? AND status='open'",
+                                            common.project_id())}
+        hits = [h for h in hits if h["name"] in still]
     if args.write:
-        print(json.dumps(write(hits, int(args.range_from, 0) if args.range_from else None)))
+        print(json.dumps(write(hits, int(args.range_from, 0) if args.range_from else None, tail=not args.no_range)))
+        if args.app:  # the app's own record: status 'asm' with the reason, as its Set aside does
+            aside = json.loads((common.CONFIG / "set_aside.json").read_text())
+            done = 0
+            for h in hits:
+                try:
+                    common.api("/api/setaside", {"slug": common.SLUG, "name": h["name"], "why": aside[h["name"]]})
+                    done += 1
+                except common.OutmatchError as e:
+                    print(json.dumps({"name": h["name"], "error": str(e)[:200]}))
+            print(json.dumps({"set_aside_in_app": done}))
     return 0
 
 
