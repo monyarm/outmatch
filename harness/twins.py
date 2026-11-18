@@ -16,6 +16,7 @@ import json
 import re
 import sqlite3
 import struct
+import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -243,7 +244,7 @@ def borrow(other_text: str, span: tuple[int, int], code: str, mine: str, names: 
         name = _declares(renamed)
         if name and name not in have:
             pool.append((name, renamed))
-        elif name in my_types and "{" in renamed and flat(renamed) != my_types[name]:
+        elif name in my_types and "{" in renamed and flat(renamed) != my_types[name] and "func_" not in name:
             # this file has its own, other struct of that name: the twin keeps its own under a private name (the
             # symbol doesn't carry the class: the build names a method by its address)
             private[name] = name + "_tw"
@@ -455,39 +456,91 @@ def score_unit(unit: str, items: list[Pair], slot: int) -> dict[str, float]:
         pass
     mine = (common.file_compilers().get(f"src/auto/{unit}.cpp") or common.default_compiler(),
             common.file_flags().get(f"src/auto/{unit}.cpp", []))
-    for i, p in enumerate(items):  # each twin short of 100 on its own: repaired, then under the other's build
+    def attempt(q):
+        """(q as it compiled, pct, neighbours it costs) or None when it doesn't compile."""
+        try:
+            q, got = repair(q, base, run)
+        except common.OutmatchError:
+            return None
+        return q, got.get(q.symbol) or 0.0, before - ok(got)
+
+    def under(q, **build):
+        """(pct, neighbours lost) for q and the unit built another way (compiler, flags)."""
+        got = common.scores(target, common.scratch_compile(root, unit, _unit_text(base, [q]), out_rel, **build))
+        was = ok(common.scores(target, common.scratch_compile(root, unit, base, out_rel, **build)))
+        return got.get(q.symbol) or 0.0, (before & was) - ok(got) | (before - was)
+
+    for i, p in enumerate(items):  # each twin short of 100 on its own
         if results.get(p.symbol, 0) >= 99.999:
             continue
-        try:
-            p, got = repair(p, base, run)
-        except common.OutmatchError:
+        best = attempt(p)
+        # 1. every name it uses declared the way its own game declares it (callees' conventions, globals' types)
+        if best is None or best[1] < 99.999 or best[2]:
+            alt = attempt(adopt(p, base))
+            if alt and (best is None or (alt[1], -len(alt[2])) > (best[1], -len(best[2]))):
+                best = alt
+        if best is None:
             results[p.symbol] = -1.0
             continue
+        p, pct, lost = best
         items[i] = p
-        pct = got.get(p.symbol) or 0.0
-        if before - ok(got):
+        if lost:
             if pct >= 99.999:  # its declarations cost a neighbour here: alone in a unit they cost nothing
-                items[i] = replace(p, split=(mine[0], []))
+                items[i] = replace(p, split=(mine[0], [], "add"))
             results[p.symbol] = -2.0
             continue
-        if pct < 99.999 and p.source and (theirs := their_build(p)) != mine:
-            comp, flags = theirs
+        # 2. its own game's build of that file, then the flag sweep
+        builds = []
+        if p.source and (theirs := their_build(p)) != mine:
+            extra = [f for f in theirs[1] if f not in mine[1]]
+            builds.append(((theirs[0], extra, "add"), {"compiler": theirs[0], "extra": extra}))
+        if pct >= SWEEP_FROM:
+            from . import flags as fl
+            for _, full in fl.candidate_sets(unit):
+                delta = fl.delta_flags(unit, full)
+                if delta != mine[1]:
+                    builds.append(((mine[0], delta, "set"), {"flags": full}))
+        for build, kw in builds:
+            if pct >= 99.999:
+                break
             try:
-                alt = common.scores(target, common.scratch_compile(
-                    root, unit, _unit_text(base, [p]), out_rel, compiler=comp,
-                    extra=[f for f in flags if f not in mine[1]]))
-                alt_before = ok(common.scores(target, common.scratch_compile(
-                    root, unit, base, out_rel, compiler=comp, extra=[f for f in flags if f not in mine[1]])))
-                extra = [f for f in flags if f not in mine[1]]
-                if (alt.get(p.symbol) or 0) >= 99.999 and not (before - ok(alt)) and before <= alt_before | ok(alt):
-                    items[i] = p = replace(p, pin=(comp, extra))
-                    pct = 100.0
-                elif (alt.get(p.symbol) or 0) >= 99.999:  # the other build costs a neighbour: a unit of its own
-                    items[i] = p = replace(p, split=(comp, extra))
+                alt_pct, alt_lost = under(p, **kw)
             except common.OutmatchError:
-                pass
+                continue
+            if alt_pct >= 99.999:
+                items[i] = p = replace(p, **({"split": build} if alt_lost else {"pin": build}))
+                pct = 100.0 if not alt_lost else pct
+                if alt_lost:
+                    break
         results[p.symbol] = pct
     return results
+
+
+SWEEP_FROM = 50.0  # the flag sweep (~24 builds) only for twins this close already
+
+
+def adopt(p: Pair, base: str) -> Pair:
+    """p with every name its code uses that this file declares (a prototype, an extern) declared as the other
+    project does instead: the twin's code is identical, so its game's declarations are the right ones."""
+    if not p.source:
+        return p
+    used = set(re.findall(r"\b\w+\b", p.code))
+    back = {v: k for k, v in p.names.items()}
+    drop, add = set(p.drop), []
+    for s0, e0 in chunks(base):
+        chunk = base[s0:e0]
+        if "{" in chunk or chunk.startswith("#"):
+            continue
+        name = _declares(chunk)
+        if not name or name not in used or name in drop:
+            continue
+        theirs = source_decl(p.source, back.get(name, name))
+        if theirs and re.sub(r"\s+", " ", apply(theirs, p.names)) != re.sub(r"\s+", " ", chunk):
+            drop.add(name)
+            add.append(apply(theirs, p.names))
+    if not add:
+        return p
+    return replace(p, drop=tuple(sorted(drop)), helpers="\n\n".join([*dict.fromkeys(add), p.helpers]))
 
 
 def _add_names(path: Path, entries: dict[str, str]) -> None:
@@ -504,7 +557,7 @@ _PIN_LOCK = _threading.Lock()
 def apply_pin(p: Pair) -> None:
     """Build p's unit with the compiler (and flags) its twin's file has: file_compilers.json / file_flags.json,
     which the app's build reads (scoring already showed every match in the unit keeps)."""
-    comp, flags = p.pin
+    comp, flags, *mode = p.pin
     key = f"src/auto/{p.unit}.cpp"
     with _PIN_LOCK:
         path = common.FILE_COMPILERS
@@ -513,9 +566,12 @@ def apply_pin(p: Pair) -> None:
         if table.get(key) != want:
             table.pop(key, None) if want is None else table.__setitem__(key, want)
             path.write_text(json.dumps(table, indent=2) + "\n", encoding="utf-8")
-        if flags:
-            ff = common.file_flags()
-            ff[key] = sorted(set(ff.get(key, [])) | set(flags))
+        ff = common.file_flags()
+        want_flags = list(flags) if mode == ["set"] else sorted(set(ff.get(key, [])) | set(flags))
+        if want_flags != ff.get(key, []):
+            ff[key] = want_flags  # "set": a whole flag set from a sweep; else flags added to the file's own
+            if not want_flags:
+                ff.pop(key)
             common.save_file_flags(ff)
         common.log("twin-pin", unit=p.unit, compiler=comp, flags=flags)
 
@@ -526,11 +582,40 @@ def _wait_check() -> None:
         time.sleep(3)
 
 
-def split_and_try(p: Pair) -> dict:
-    """Put p in its unit, move it into a unit of its own (flags.split_out) built as p.split says, and try it.
-    Anything short of a match puts every file this touched back as it was."""
+def _build_args(unit: str, pin) -> dict:
+    """scratch_compile's keywords for a pin: (compiler, extra flags) or (compiler, flags relative to the
+    global set, "set")."""
+    if not pin:
+        return {}
     from . import flags as fl
-    paths = [common.FUNCTIONS_JSON, common.FILE_FLAGS, common.FILE_COMPILERS, common.source_path(p.unit)]
+    comp, flags, *mode = pin
+    if mode == ["set"]:
+        return {"compiler": comp, "flags": [*fl.global_flags(unit), *flags]}
+    return {"compiler": comp, "extra": list(flags)}
+
+
+def _save_json(path: Path, data: dict, like: str) -> None:
+    """Write `data` the way the file was written (indent, trailing newline), so diffs stay small."""
+    indent = 1 if like.startswith("{\n \"") else 2
+    path.write_text(json.dumps(data, indent=indent) + ("\n" if like.endswith("\n") else ""), encoding="utf-8")
+
+
+def delinker() -> Path:
+    """tools/delink.py: the project's, else the one decompdecomp makes PC projects with (it delinks those itself)."""
+    own = common.ROOT / "tools" / "delink.py"
+    if own.is_file():
+        return own
+    out = subprocess.run([common.app_python(), "-c", "import decompnet, pathlib; print(pathlib.Path(decompnet.__file__)"
+                          ".parent / 'consoles/pc/project_template/tools/delink.py')"],
+                         capture_output=True, text=True, check=True).stdout.strip()
+    return Path(out)
+
+
+def split_and_try(p: Pair) -> dict:
+    """Put p in its unit, move it into a unit of its own (its address's) built as p.split says, have the app
+    re-read the project (it delinks the new unit), and try it. Short of a match, every file goes back."""
+    src = common.source_path(p.unit)
+    paths = [common.FUNCTIONS_JSON, common.FILE_FLAGS, common.FILE_COMPILERS, src]
     snap = {path: path.read_text(encoding="utf-8") for path in paths if path.is_file()}
     new_path = None
 
@@ -546,17 +631,44 @@ def split_and_try(p: Pair) -> dict:
         _wait_check()
         return {"matched": False, "why": why[:300]}
 
-    comp, extra = p.split
-    common.source_path(p.unit).write_text(_unit_text(snap[common.source_path(p.unit)], [p]), encoding="utf-8")
-    try:
-        res = fl.split_out(p.unit, p.symbol, [*fl.command_flags(p.unit), *extra], [p.symbol])
-    except common.OutmatchError as e:
-        return undo(f"split failed: {e}")
-    if not res.get("split"):
-        return undo(res.get("why") or "split failed")
-    new_path = common.source_path(res["split"])
-    apply_pin(replace(p, unit=res["split"], pin=(comp, [])))
+    text = _unit_text(snap[src], [p])
+    info = json.loads(snap[common.FUNCTIONS_JSON])
+    entries = info["units"].get(p.unit) or []
+    entry = next((e for e in entries if e.get("name") == p.symbol), None)
+    if entry is None:
+        return {"matched": False, "why": f"{p.symbol} isn't listed under {p.unit}"}
+    new_unit = f"text_{int(entry['addr']):08X}"
+    if new_unit in info["units"] or new_unit == p.unit:
+        return {"matched": False, "why": f"{new_unit} already exists"}
+    _, start, end = common.definition_span(text, p.symbol)
+    starts = [st for e in entries if (st := common.definition_span(text, e["name"])[1]) >= 0]
+    first = min(starts, default=start)
+    new_path = common.source_path(new_unit)
+    # the unit's declarations (the twin's among them) go with it: its prologue is everything before the first body
+    new_path.write_text(text[:first].rstrip() + "\n\n" + text[start:end].rstrip() + "\n", encoding="utf-8")
+    src.write_text(text[:start] + text[end:], encoding="utf-8")
+    info["units"][p.unit] = [e for e in entries if e is not entry]
+    info["units"][new_unit] = [entry]
+    _save_json(common.FUNCTIONS_JSON, info, snap[common.FUNCTIONS_JSON])
+    common._functions = None
+    key_old, key_new = f"src/auto/{p.unit}.cpp", f"src/auto/{new_unit}.cpp"
+    ff = common.file_flags()
+    if key_old in ff:  # the split recipe: the new unit starts with the old one's flags
+        ff[key_new] = list(ff[key_old])
+        common.save_file_flags(ff)
+    fc = common.file_compilers()
+    if key_old in fc:
+        fc[key_new] = fc[key_old]
+        _save_json(common.FILE_COMPILERS, fc, snap.get(common.FILE_COMPILERS, "{}\n"))
+    apply_pin(replace(p, unit=new_unit, pin=p.split))
+    try:  # the new unit's target object: the project's delinker, as the app's own template has it
+        subprocess.run([common.app_python(), "-I", str(delinker()), str(common.FUNCTIONS_JSON), str(common.TARGETS)],
+                       cwd=common.ROOT, check=True, capture_output=True, text=True, timeout=600)
+    except (subprocess.SubprocessError, OSError) as e:
+        return undo(f"delink failed: {getattr(e, 'stderr', '') or e}")
     _wait_check()
+    if not common.target_obj(new_unit).is_file():
+        return undo("no target object for the new unit")
     try:
         out = common.try_function(p.symbol, p.code)
     except common.OutmatchError as e:
@@ -564,8 +676,32 @@ def split_and_try(p: Pair) -> dict:
     if not out.get("matched"):
         common.release(p.symbol)
         return undo("app: " + str(out.get("text", out)))
-    common.log("twin-split", symbol=p.symbol, unit=res["split"], compiler=comp, flags=extra)
-    return {"matched": True, "unit": res["split"]}
+    common.log("twin-split", symbol=p.symbol, unit=new_unit, build=p.split)
+    return {"matched": True, "unit": new_unit}
+
+
+def seed_one(p: Pair, pct: float) -> bool:
+    """A twin short of 100 but better than the app's best: make it the best (agents and the permuter start
+    there). The app keeps an improving attempt in the file; anything else leaves the file as it was."""
+    from . import search as srch
+    fn = common.function_by_name(p.symbol)
+    if not fn or pct <= srch.db_best_pct(fn) + 1e-6 or p.pin or p.split:
+        return False
+    path = common.source_path(p.unit)
+    before = path.read_text(encoding="utf-8")
+    ours = _unit_text(before, [p])
+    path.write_text(ours, encoding="utf-8")
+    try:
+        common.try_function(p.symbol, p.code)
+    except common.OutmatchError:
+        pass
+    common.release(p.symbol)
+    now = path.read_text(encoding="utf-8")
+    if p.code.strip() in now:
+        return True  # kept: its declarations stay with it
+    if now == ours:
+        path.write_text(before, encoding="utf-8")
+    return False
 
 
 def submit_one(p: Pair, slot) -> dict:
@@ -574,7 +710,7 @@ def submit_one(p: Pair, slot) -> dict:
     path = common.source_path(p.unit)
     before = path.read_text(encoding="utf-8")
     ours = _unit_text(before, [p])
-    pin = {"compiler": p.pin[0], "extra": p.pin[1]} if p.pin else {}
+    pin = _build_args(p.unit, p.pin)
     try:  # earlier matches in this unit change it (their declarations): score again as it is now
         n = slot.get()
         try:
@@ -585,6 +721,10 @@ def submit_one(p: Pair, slot) -> dict:
             slot.put(n)
         if not (got.get(p.symbol) or 0) >= 99.999:
             return {"matched": False, "text": f"no longer exact in the unit as it is now ({got.get(p.symbol)})"}
+        matched_now = [n for (n,) in common.query("SELECT name FROM functions WHERE project_id=? AND unit=? AND "
+                                                   "status='matched'", common.project_id(), p.unit)]
+        if lost := [n for n in matched_now if not (got.get(n) or 0) >= 99.999]:  # (an earlier twin's pin, say)
+            return {"matched": False, "text": "would cost matches in the unit as it is now: " + ", ".join(lost[:5])}
     except common.OutmatchError as e:
         return {"matched": False, "text": "no longer compiles in the unit as it is now: " + str(e)[-200:]}
     if p.pin:
@@ -603,7 +743,7 @@ def submit_one(p: Pair, slot) -> dict:
 
 
 def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_size: int = 8,
-        say=lambda line: print(line, flush=True)) -> dict:
+        seed: bool = True, polish: float = 0, say=lambda line: print(line, flush=True)) -> dict:
     """Score every twin unit by unit (in parallel) and submit each unit's 100s as soon as it is scored."""
     import fcntl
     import queue
@@ -646,7 +786,7 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
     import threading
     pid = common.project_id()
     lock = threading.Lock()
-    tally = {"matched": 0, "exact": 0, "done": 0}
+    tally = {"matched": 0, "exact": 0, "done": 0, "seeded": []}
 
     def unit_work(unit):
         """Score one unit, then submit its 100s: units in parallel, a unit's tries one after another (one file)."""
@@ -676,6 +816,11 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
                         row["app"] = str(res.get("text", res))[:200].replace("\n", " ")
                     with lock:
                         tally["matched"] += row["matched"]
+            elif pct > 0 and submit and seed and not p.split:
+                row["seeded"] = seed_one(p, pct)
+                if row["seeded"]:
+                    with lock:
+                        tally["seeded"].append(p.symbol)
             with lock:
                 say(json.dumps(row))
 
@@ -691,10 +836,20 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
             row = {"symbol": p.symbol, "from": f"{p.origin}:{p.other}", "split": p.split, **split_and_try(p)}
             tally["matched"] += bool(row.get("matched"))
             say(json.dumps(row))
-    if submit and tally["exact"]:  # a rejected try leaves the app's last object of that unit built from it: re-read
+    if polish and submit:  # 3. the permuter on what the twins got close (each from the app's best: the twin's now)
+        from . import search as srch
+        for sym in tally["seeded"]:
+            fn = common.function_by_name(sym)
+            if not fn or common.query_one("SELECT status FROM functions WHERE id=?", fn["id"])[0] != "open":
+                continue
+            out = srch.search(fn, seconds=polish, jobs=jobs, submit_match=True)
+            tally["matched"] += bool(out.matched)
+            say(json.dumps({"symbol": sym, "polish_pct": round(out.best_pct, 3), "matched": out.matched}))
+    if submit and (tally["exact"] or tally["seeded"]):  # a rejected try leaves the app's last object of that unit built from it: re-read
         _wait_check()
     matched, exact = tally["matched"], tally["exact"]
-    summary = {"pairs": len(pairs), "exact_here": exact, "matched": matched, "skipped": len(skipped)}
+    summary = {"pairs": len(pairs), "exact_here": exact, "matched": matched, "seeded": len(tally["seeded"]),
+               "skipped": len(skipped)}
     say(json.dumps(summary))
     return summary
 

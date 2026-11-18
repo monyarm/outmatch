@@ -226,7 +226,8 @@ def cmd_restore(args) -> int:
 
 def cmd_twins(args) -> int:
     from . import twins
-    twins.run([Path(p) for p in args.source], jobs=args.jobs, submit=not args.no_submit, min_size=args.min_size)
+    twins.run([Path(p) for p in args.source], jobs=args.jobs, submit=not args.no_submit, min_size=args.min_size,
+              seed=not args.no_seed, polish=args.polish)
     return 0
 
 def cmd_stale(args) -> int:
@@ -489,6 +490,9 @@ def main(argv: list[str] | None = None) -> int:
     tw.add_argument("--jobs", type=int, default=common.JOBS)
     tw.add_argument("--min-size", type=int, default=8)
     tw.add_argument("--no-submit", action="store_true", help="score only")
+    tw.add_argument("--no-seed", action="store_true", help="don't make a near twin the function's best attempt")
+    tw.add_argument("--polish", type=float, default=0, metavar="SECONDS",
+                    help="then run the permuter this long on each twin it seeded")
     tw.set_defaults(func=cmd_twins)
 
     fl = sub.add_parser("flags", help="sweep compiler flags per unit")
