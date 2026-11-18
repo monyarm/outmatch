@@ -30,8 +30,21 @@ def _project_root() -> Path:
     for d in (here, *here.parents):
         if any((d / "config").glob("*/functions.json")):
             return d
+    roots = _registered_roots()  # a ROM project: the folder the app registered for it
+    for d in (here, *here.parents):
+        if d in roots:
+            return d
     sys.exit("outmatch: run it inside a decompdecomp project (a folder with config/<version>/functions.json), "
              "or set OUTMATCH_PROJECT")
+
+
+def _registered_roots() -> set[Path]:
+    db = Path(os.environ.get("DECOMPNET_HOME", Path.home() / "Decomp" / ".decomp")) / "decomp.db"
+    try:
+        with sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=30) as conn:
+            return {Path(r).resolve() for (r,) in conn.execute("SELECT root FROM projects") if r}
+    except sqlite3.Error:
+        return set()
 
 
 def _version(root: Path) -> str:
@@ -39,12 +52,15 @@ def _version(root: Path) -> str:
     if os.environ.get("OUTMATCH_VERSION"):
         return os.environ["OUTMATCH_VERSION"]
     found = sorted(p.parent.name for p in (root / "config").glob("*/functions.json"))
+    if not found and root in _registered_roots():
+        return ""  # a ROM project: no source tree of versions
     if len(found) != 1:
         sys.exit(f"outmatch: {root} has config for {found or 'no version'}: set OUTMATCH_VERSION")
     return found[0]
 
 
 ROOT = _project_root()
+KIND = "fork" if any((ROOT / "config").glob("*/functions.json")) else "rom"  # rom: judged against a ROM (harness.rom)
 APP_HOME = Path(os.environ.get("DECOMPNET_HOME", Path.home() / "Decomp" / ".decomp"))
 DB = APP_HOME / "decomp.db"
 VERSION = _version(ROOT)
@@ -273,6 +289,9 @@ def check_project() -> dict:
 
 def app_python() -> str:
     """The interpreter the project's build uses (it can import decompnet; also has stdlib)."""
+    if KIND == "rom":  # no build: the running app's
+        from .rom import app_python as rom_python
+        return rom_python()
     argv = build_command(next(iter(functions()["units"])))
     return argv[0]
 

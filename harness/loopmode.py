@@ -94,8 +94,12 @@ class Ledger:
 
 
 def runnable(phases: tuple[str, ...]) -> tuple[str, ...]:
-    """The phases this project's compiler can use (the MSVC ones only for Visual C++)."""
-    return phases if common.is_msvc() else tuple(p for p in phases if p not in MSVC_ONLY)
+    """The phases this project's compiler can use: MSVC's for Visual C++; on a ROM project, levers/flags/compiler of
+    its own compiler family (harness.rom), never msvc or pragma."""
+    if common.is_msvc():
+        return phases
+    skip = {"msvc", "pragma"} if common.KIND == "rom" else MSVC_ONLY
+    return tuple(p for p in phases if p not in skip)
 
 
 def pending(fn: dict, phases: tuple[str, ...], ledger: Ledger) -> bool:
@@ -146,7 +150,23 @@ def candidates(max_score: float | None = 0.06, unit: str = "", limit: int = 0, a
 
 
 def _unit_text(fn: dict) -> str:
+    if common.KIND == "rom":  # no source files: the function's own best C is what the phases start from
+        row = common.query_one("SELECT best_source FROM functions WHERE project_id=? AND name=?",
+                               common.project_id(), fn["name"])
+        return (row[0] if row else "") or ""
     return common.source_path(fn["unit"]).read_text(encoding="utf-8")
+
+
+_JUDGE = None
+
+
+def rom_judge():
+    """The ROM project's judge process, started once per run."""
+    global _JUDGE
+    if _JUDGE is None:
+        from . import rom
+        _JUDGE = rom.Judge()
+    return _JUDGE
 
 
 def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: float = 900.0,
@@ -161,10 +181,10 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
     started = time.monotonic()
     result = {"symbol": symbol, "unit": unit, "phases": [], "matched": False, "best_pct": -1.0}
 
-    msvc = common.is_msvc()
+    allowed = set(runnable(phases))
     for name in phases:
-        if name in MSVC_ONLY and not msvc:
-            result["phases"].append({"phase": name, "skipped": "not an MSVC project"})
+        if name not in allowed:
+            result["phases"].append({"phase": name, "skipped": "not a phase for this project's compiler"})
             continue
         if not again and ledger.done(symbol, name, src_sha):
             result["phases"].append({"phase": name, "skipped": "already tried on this source"})
@@ -176,7 +196,12 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
             continue
         say(json.dumps({"symbol": symbol, "phase": name, "start": True, "budget": round(left, 1)}))
         try:
-            if name == "msvc":
+            if common.KIND == "rom":  # levers/flags/compiler/permuter of the project's compiler family
+                from . import rom
+                got = rom.phase(name, {**rom.function(symbol)}, rom_judge(), max(5.0, left), submit_match, say)
+                out = {"best_pct": got["pct"], "matched": got["matched"], "note": got.get("note", ""),
+                       "submitted": got["matched"]}
+            elif name == "msvc":
                 from . import tricks
                 if depth > 1:
                     chain = tricks.ascend(fn, jobs=jobs, depth=depth, beam=beam, cap=cap,
