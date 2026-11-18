@@ -46,13 +46,14 @@ def one(slug: str, action: str) -> dict:
 
 
 def roots() -> list[tuple[str, str]]:
-    """(slug, folder) of every PC project the app knows (outmatch works on PC forks)."""
+    """(slug, folder) of every project outmatch works on: PC forks and ROM projects."""
     with sqlite3.connect(f"file:{APP_HOME / 'decomp.db'}?mode=ro", uri=True) as db:
         rows = db.execute("SELECT slug, root, config FROM projects ORDER BY id").fetchall()
     out = []
     for slug, root, cfg in rows:
         cfg = json.loads(cfg or "{}")
-        if root and cfg.get("kind") == "fork" and cfg.get("platform") == "pc" and Path(root).is_dir():
+        if root and (cfg.get("kind") == "rom" or cfg.get("kind") == "fork" and cfg.get("platform") == "pc") \
+                and Path(root).is_dir():
             out.append((slug, root))
     return out
 
