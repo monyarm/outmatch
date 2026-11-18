@@ -45,6 +45,38 @@ def one(slug: str, action: str) -> dict:
                                                     "no_drafts") if ap.get(k) not in (None, "")}}
 
 
+def roots() -> list[tuple[str, str]]:
+    """(slug, folder) of every PC project the app knows (outmatch works on PC forks)."""
+    with sqlite3.connect(f"file:{APP_HOME / 'decomp.db'}?mode=ro", uri=True) as db:
+        rows = db.execute("SELECT slug, root, config FROM projects ORDER BY id").fetchall()
+    out = []
+    for slug, root, cfg in rows:
+        cfg = json.loads(cfg or "{}")
+        if root and cfg.get("kind") == "fork" and cfg.get("platform") == "pc" and Path(root).is_dir():
+            out.append((slug, root))
+    return out
+
+
+def loop_all(argv: list[str]) -> int:
+    """`loop --all`: the loop on every project in turn, each its own process (outmatch binds one project per
+    process); with --forever, each pass is one finite loop per project, round and round."""
+    import subprocess
+    import time
+    forever = "--forever" in argv
+    args = [a for a in argv if a not in ("--all", "--forever")]
+    here = Path(__file__).resolve().parent.parent
+    while True:
+        for slug, root in roots():
+            print(json.dumps({"project": slug, "loop": "start"}), flush=True)
+            env = {**os.environ, "OUTMATCH_PROJECT": root, "OUTMATCH_SLUG": slug}
+            env["PYTHONPATH"] = str(here) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+            code = subprocess.run([sys.executable, "-m", "harness.cli", "loop", *args], cwd=root, env=env).returncode
+            print(json.dumps({"project": slug, "loop": "done", "exit": code}), flush=True)
+        if not forever:
+            return 0
+        time.sleep(60)
+
+
 def main(argv: list[str]) -> int:
     action = "stop" if "--stop" in argv else "status" if "--status" in argv else "start"
     if "--all" in argv:

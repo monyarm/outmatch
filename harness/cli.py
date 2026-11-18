@@ -7,6 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+if sys.argv[1:2] == ["loop"] and "--all" in sys.argv:  # before common: one process per project, from anywhere
+    from .autopilot import loop_all as _loop_all
+    sys.exit(_loop_all(sys.argv[2:]))
+
 if sys.argv[1:2] == ["autopilot"]:  # before common: `autopilot --all` runs outside any project
     from .autopilot import main as _autopilot
     sys.exit(_autopilot(sys.argv[2:]))
@@ -139,7 +143,9 @@ def cmd_loop(args) -> int:
     from . import loopmode
     phases = tuple(p.strip() for p in args.phases.split(",") if p.strip())
     if phases == ("all",):
-        phases = loopmode.PHASES
+        phases = (*loopmode.PHASES, "twins")
+    twins_on = "twins" in phases  # a pass over the project, not a phase of one function
+    phases = tuple(p for p in phases if p != "twins")
     bad = [p for p in phases if p not in loopmode.PHASES]
     if bad:
         raise SystemExit(f"unknown phase(s): {', '.join(bad)} (choose from {', '.join(loopmode.PHASES)})")
@@ -158,7 +164,8 @@ def cmd_loop(args) -> int:
         return 0
     out = loopmode.loop(max_score=args.max_ratio, unit=args.unit, limit=args.limit or 0, seconds=args.seconds,
                         jobs=args.jobs, count=args.count, seed=args.seed, submit_match=not args.no_submit,
-                        again=args.again, forever=args.forever, idle=args.idle, phases=phases,
+                        again=args.again, forever=args.forever, idle=args.idle, phases=phases, twins=twins_on,
+                        near=args.near,
                         any_permuted=args.any, min_pct=args.min_pct, order=args.order,
                         apply_best=args.apply_improvements, depth=args.depth, beam=args.beam, cap=args.cap,
                         focus=args.focus != "off")
@@ -227,7 +234,7 @@ def cmd_restore(args) -> int:
 def cmd_twins(args) -> int:
     from . import twins
     twins.run([Path(p) for p in args.source], jobs=args.jobs, submit=not args.no_submit, min_size=args.min_size,
-              seed=not args.no_seed, polish=args.polish, near=args.near)
+              seed=not args.no_seed, polish=args.polish, near=args.near, again=args.again)
     return 0
 
 def cmd_stale(args) -> int:
@@ -407,8 +414,9 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--limit", type=int, default=0, help="functions this run (0 = every candidate)")
     lp.add_argument("--seconds", type=float, default=900, help="budget per function")
     lp.add_argument("--phases", default="msvc,levers,pragma,permuter,compiler",
-                    help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags); flags sweeps the unit "
-                         "and applies only a clean winning set")
+                    help="comma-separated phases ('all' = msvc,levers,pragma,permuter,flags,twins); flags sweeps the "
+                         "unit and applies only a clean winning set; twins runs `twins` from every project of the "
+                         "platform at the start of each pass (pairs tried before with the same code are skipped)")
     lp.add_argument("--focus", choices=("auto", "off"), default="auto",
                     help="order the catalogue by the observed objdiff diff kinds (default) or run it as listed")
     lp.add_argument("--cap", type=int, default=160, help="variants per generation")
@@ -421,6 +429,10 @@ def main(argv: list[str] | None = None) -> int:
     lp.add_argument("--again", action="store_true", help="rerun phases already tried on this exact source")
     lp.add_argument("--any", action="store_true", help="include functions the app hasn't permuted 4 times")
     lp.add_argument("--forever", action="store_true", help="keep waiting for new candidates instead of stopping")
+    lp.add_argument("--all", action="store_true",
+                    help="every project the app knows, one after another (each in its own process); "
+                         "with --forever, round and round")
+    lp.add_argument("--near", type=float, default=0.85, help="twins phase: also pair code this alike (0 = identical only)")
     lp.add_argument("--idle", type=float, default=300, help="seconds to sleep when --forever finds nothing")
     lp.add_argument("--no-submit", action="store_true")
     lp.add_argument("--apply-improvements", action="store_true",
@@ -494,6 +506,7 @@ def main(argv: list[str] | None = None) -> int:
     tw.add_argument("--jobs", type=int, default=common.JOBS)
     tw.add_argument("--min-size", type=int, default=8)
     tw.add_argument("--no-submit", action="store_true", help="score only")
+    tw.add_argument("--again", action="store_true", help="also pairs tried before with the same code")
     tw.add_argument("--no-seed", action="store_true", help="don't make a near twin the function's best attempt")
     tw.add_argument("--near", type=float, default=0, metavar="RATIO",
                     help="also pair functions whose masked bytes are this alike (e.g. 0.85), not only identical")

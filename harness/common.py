@@ -190,6 +190,15 @@ def query_one(sql: str, *args):
     return rows[0] if rows else None
 
 
+def is_msvc() -> bool:
+    """Whether the project builds with Visual C++ (its config's compiler: "MSVC/..." for a PC fork, a toolchain id
+    with msvc in it otherwise), so the MSVC-only phases (msvc, levers, pragma, flags, compiler) apply."""
+    row = query_one("SELECT config FROM projects WHERE slug=?", SLUG)
+    comp = (json.loads(row[0] or "{}") if row else {}).get("compiler")
+    tc = comp.get("toolchain", "") if isinstance(comp, dict) else str(comp or "")
+    return tc.upper().startswith("MSVC") or "msvc" in tc.lower()
+
+
 def project_id() -> int:
     row = query_one("SELECT id FROM projects WHERE slug=?", SLUG)
     if not row:

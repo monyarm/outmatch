@@ -338,6 +338,7 @@ class Pair:
     drop: tuple = ()                           # this file's declarations of these names give way to the twin's
     pin: tuple | None = None                   # (compiler, extra flags) the unit needs for it to match
     split: tuple | None = None                 # (compiler, extra flags) it matches with in a unit of its own
+    found: str = ""                            # hash of the code as found (the memo's key: repairs don't change it)
 
 
 def _other_project(root: Path) -> tuple[int, str]:
@@ -811,8 +812,43 @@ def submit_one(p: Pair, slot) -> dict:
     return res
 
 
+class Memo:
+    """.outmatch/twins_tried.json: each pair tried (this function <- that project's function), by the hash of the
+    code it brought. A pair whose code hasn't changed since it failed isn't tried again (--again does); a matched
+    function isn't open, so it never comes back as a pair anyway."""
+
+    def __init__(self):
+        self.path = common.STATE / "twins_tried.json"
+        try:
+            self.data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            self.data = {}
+        self.lock = _threading.Lock()
+
+    @staticmethod
+    def key(p: Pair) -> str:
+        return f"{p.symbol}|{p.source.resolve() if p.source else p.origin}|{p.other}"
+
+    @staticmethod
+    def sha(p: Pair) -> str:
+        return p.found or hashlib.sha1((p.code + "\0" + p.helpers).encode()).hexdigest()[:16]
+
+    def tried(self, p: Pair) -> bool:
+        r = self.data.get(self.key(p))
+        return bool(r) and r.get("sha") == self.sha(p) and not r.get("matched")
+
+    def record(self, p: Pair, row: dict) -> None:
+        with self.lock:
+            self.data[self.key(p)] = {"sha": self.sha(p), "matched": bool(row.get("matched")), "pct": row.get("pct"),
+                                      "why": row.get("error") or row.get("app") or row.get("why") or "",
+                                      "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
+
+
 def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_size: int = 8,
-        seed: bool = True, polish: float = 0, near: float = 0, say=lambda line: print(line, flush=True)) -> dict:
+        seed: bool = True, polish: float = 0, near: float = 0, again: bool = False,
+        say=lambda line: print(line, flush=True)) -> dict:
     """Score every twin unit by unit (in parallel) and submit each unit's 100s as soon as it is scored."""
     import fcntl
     import queue
@@ -825,8 +861,15 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
     except BlockingIOError:
         raise common.OutmatchError("another `twins` run is working on this project (they'd share scratch trees)")
     pairs, skipped = find_pairs(sources, min_size, near)
+    pairs = [replace(p, found=Memo.sha(p)) for p in pairs]
     for s in skipped:
         say(json.dumps(s))
+    memo = Memo()
+    if not again:  # tried before with this same code and not matched: nothing new to learn
+        before = len(pairs)
+        pairs = [p for p in pairs if not memo.tried(p)]
+        if before - len(pairs):
+            say(json.dumps({"tried_before": before - len(pairs)}))
     by_unit: dict[str, list[Pair]] = {}
     for p in pairs:
         by_unit.setdefault(p.unit, []).append(p)
@@ -890,6 +933,8 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
                 if row["seeded"]:
                     with lock:
                         tally["seeded"].append(p.symbol)
+            if submit and not row.get("skipped") and not p.split:
+                memo.record(p, row)
             with lock:
                 say(json.dumps(row))
 
@@ -903,6 +948,7 @@ def run(sources: list[Path], jobs: int = common.JOBS, submit: bool = True, min_s
             if status and status[0] != "open":
                 continue
             row = {"symbol": p.symbol, "from": f"{p.origin}:{p.other}", "split": p.split, **split_and_try(p)}
+            memo.record(p, row)
             tally["matched"] += bool(row.get("matched"))
             say(json.dumps(row))
     if polish and submit:  # 3. the permuter on what the twins got close (each from the app's best: the twin's now)

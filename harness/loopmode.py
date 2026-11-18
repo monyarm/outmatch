@@ -16,6 +16,7 @@ from . import common, search
 
 LEDGER = common.STATE / "ledger.jsonl"
 PHASES = ("msvc", "levers", "pragma", "permuter", "compiler", "flags")
+MSVC_ONLY = {"msvc", "levers", "pragma", "compiler", "flags"}  # Visual C++ idioms, #pragmas, cl versions and flags
 
 
 def _now() -> float:
@@ -92,13 +93,18 @@ class Ledger:
                 "phases": phases, "rows": len(self.rows)}
 
 
+def runnable(phases: tuple[str, ...]) -> tuple[str, ...]:
+    """The phases this project's compiler can use (the MSVC ones only for Visual C++)."""
+    return phases if common.is_msvc() else tuple(p for p in phases if p not in MSVC_ONLY)
+
+
 def pending(fn: dict, phases: tuple[str, ...], ledger: Ledger) -> bool:
     """Whether any requested phase is still worth running on the unit as it is now."""
     try:
         src = sha(_unit_text(fn))
     except OSError:
         return False
-    return any(not ledger.done(fn["name"], p, src) for p in phases)
+    return any(not ledger.done(fn["name"], p, src) for p in runnable(phases))
 
 
 def pct_of(fn: dict) -> float:
@@ -155,7 +161,11 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
     started = time.monotonic()
     result = {"symbol": symbol, "unit": unit, "phases": [], "matched": False, "best_pct": -1.0}
 
+    msvc = common.is_msvc()
     for name in phases:
+        if name in MSVC_ONLY and not msvc:
+            result["phases"].append({"phase": name, "skipped": "not an MSVC project"})
+            continue
         if not again and ledger.done(symbol, name, src_sha):
             result["phases"].append({"phase": name, "skipped": "already tried on this source"})
             continue
@@ -242,16 +252,47 @@ def visit(fn: dict, ledger: Ledger, phases: tuple[str, ...] = PHASES, seconds: f
     return result
 
 
+def twin_sources() -> list[Path]:
+    """Every project the app knows on this project's platform (this one too: its own duplicates)."""
+    mine = json.loads(common.query_one("SELECT config FROM projects WHERE slug=?", common.SLUG)[0] or "{}")
+    out = []
+    for root, cfg in common.query("SELECT root, config FROM projects"):
+        cfg = json.loads(cfg or "{}")
+        if root and cfg.get("kind") == "fork" and cfg.get("platform") == mine.get("platform") and Path(root).is_dir():
+            out.append(Path(root))
+    return out
+
+
+def twins_pass(submit: bool, jobs: int, near: float, say) -> int:
+    """The twins phase: matched code from every project (new matches since the last pass) on this one's open
+    functions; pairs already tried with the same code are skipped (twins' memo). Returns matches."""
+    from . import twins
+    cfg = json.loads(common.query_one("SELECT config FROM projects WHERE slug=?", common.SLUG)[0] or "{}")
+    if cfg.get("platform") != "pc":  # twins reads PC (COFF) objects
+        say(json.dumps({"phase": "twins", "skipped": f"not a PC project ({cfg.get('platform')})"}))
+        return 0
+    try:
+        out = twins.run(twin_sources(), jobs=jobs, submit=submit, near=near,
+                        say=lambda line: say(json.dumps({"phase": "twins", **json.loads(line)})))
+    except common.OutmatchError as e:
+        say(json.dumps({"phase": "twins", "error": str(e)[:300]}))
+        return 0
+    return int(out.get("matched", 0))
+
+
 def loop(max_score: float | None, unit: str, limit: int, seconds: float, jobs: int, count: int, seed: int,
          submit_match: bool, again: bool, forever: bool, idle: float, phases: tuple[str, ...],
          any_permuted: bool = False, min_pct: float = 0.0, order: str = "fresh", apply_best: bool = False,
-         depth: int = 1, beam: int = 1, cap: int = 160, focus: bool = True, say=print) -> dict:
+         depth: int = 1, beam: int = 1, cap: int = 160, focus: bool = True, say=print, twins: bool = False,
+         near: float = 0.85) -> dict:
     ledger = Ledger()
     total = {"visited": 0, "matched": 0, "phases": 0}
     try:
         while True:
+            if twins:  # first: free matches from code matched anywhere since the last pass
+                total["matched"] += twins_pass(submit_match, jobs, near, say)
             todo = candidates(max_score=max_score, unit=unit, limit=limit, any_permuted=any_permuted,
-                              ledger=ledger, min_pct=min_pct, order=order)
+                              ledger=ledger, min_pct=min_pct, order=order) if phases else []
             if not todo:
                 if not forever:
                     break
