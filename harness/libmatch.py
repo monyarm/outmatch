@@ -213,6 +213,90 @@ def scan(lib_dirs=(("SP5", LIB_DIR_DEFAULT),), libs=DEFAULT_LIBS):
     return hits, ambiguous, files, len(index)
 
 
+def other_block(root: Path) -> list[tuple]:
+    """Another project's library block, as (size, masked bytes, project, "", its function): the functions inside
+    its set_aside.json ranges (the block its own libmatch proved and set aside)."""
+    cfg = next((root / "config").glob("*/functions.json")).parent
+    aside = json.loads((cfg / "set_aside.json").read_text()) if (cfg / "set_aside.json").is_file() else {}
+    spans = [(int(r["from"], 16), int(r["to"], 16)) for r in aside.get("ranges") or []]
+    info = json.loads((cfg / "functions.json").read_text())
+    from rebuild import read_coff  # noqa: F401  (object_functions reads the targets)
+    out = []
+    for unit, entries in info["units"].items():
+        path = root / "build" / cfg.name / "target" / f"{unit}.obj"
+        inside = [e for e in entries if any(a <= e["addr"] < b for a, b in spans)]
+        if not inside or not path.is_file():
+            continue
+        by_name = {f["name"]: f for f in object_functions(path.read_bytes())}
+        for e in inside:
+            if f := by_name.get(e["name"]):
+                named = (info.get("names") or {}).get(f"func_{e['addr']:08X}") or e["name"]
+                out.append((f["size"], signature(f["size"], f["data"], f["relocs"])[1], root.name, cfg.name, named))
+    return out
+
+
+def near_tail(hits, lib_dirs, libs, ratio: float, like: list = ()) -> list[dict]:
+    """Open functions inside the library block (from tail_range(hits) to the end of .text) that libmatch can't prove
+    byte for byte but whose masked bytes are at least `ratio` like one library function, and more like it than
+    like any function of the game's own code before the block: the same library, another build of it."""
+    import bisect
+    import difflib
+    start = tail_range(hits)
+    if start is None:
+        return []
+    still = {n for (n,) in common.query("SELECT name FROM functions WHERE project_id=? AND status='open'",
+                                        common.project_id())}
+    proven = {h["name"] for h in hits}
+    body = lambda f: signature(f["size"], f["data"], f["relocs"])[1]
+    pool = []  # (size, masked bytes, lib, member, symbol)
+    for build, lib_dir in lib_dirs:
+        for lib, path in library_files(Path(lib_dir), libs):
+            try:
+                members = [(path.name, path.read_bytes())] if path.suffix.lower() == ".obj" else archive(path)
+            except ValueError:
+                continue
+            for member, data in members:
+                if not member.lower().endswith(".obj"):
+                    continue
+                try:
+                    for f in object_functions(data):
+                        pool.append((f["size"], body(f), lib, member_name(member), f["name"]))
+                except Exception:
+                    continue
+    for root in like:  # another game's library block (set aside there by its range) counts as the same library
+        pool += other_block(Path(root))
+    pool.sort(key=lambda x: x[0])
+    sizes = [x[0] for x in pool]
+    game, inside = [], []
+    for unit, entry, f in target_functions():
+        (inside if entry["addr"] >= start else game).append((entry, body(f)))
+    game.sort(key=lambda x: len(x[1]))
+    gsizes = [len(x[1]) for x in game]
+
+    def best(code, cands):
+        sm, top = difflib.SequenceMatcher(None, autojunk=False), (0.0, None)
+        sm.set_seq2(code)
+        for c in cands:
+            sm.set_seq1(c[1])
+            if sm.real_quick_ratio() <= top[0] or sm.quick_ratio() <= top[0]:
+                continue
+            if (r := sm.ratio()) > top[0]:
+                top = (r, c)
+        return top
+
+    out = []
+    for entry, code in inside:
+        if entry["name"] not in still or entry["name"] in proven or len(code) < 8:
+            continue
+        lo, hi = len(code) * ratio, len(code) / ratio
+        r, c = best(code, pool[bisect.bisect_left(sizes, lo):bisect.bisect_right(sizes, hi)])
+        g, _ = best(code, [(None, b) for _, b in game[bisect.bisect_left(gsizes, lo):bisect.bisect_right(gsizes, hi)]])
+        if r >= ratio and r > g:
+            out.append({"unit": "", "addr": entry["addr"], "name": entry["name"], "size": entry["size"], "lib": c[2],
+                        "member": c[3], "symbol": c[4], "near": round(r, 3), "game_like": round(g, 3)})
+    return out
+
+
 def tail_range(hits) -> int | None:
     """Where the library's block at the end of .text starts: the address after the largest gap between hits.
 
@@ -286,6 +370,11 @@ def main(argv=None) -> int:
     parser.add_argument("--no-range", action="store_true", help="only the proven functions, no tail range entry")
     parser.add_argument("--open-only", action="store_true", help="leave functions that already match from C alone")
     parser.add_argument("--app", action="store_true", help="with --write: also set each one aside in the app")
+    parser.add_argument("--near", type=float, default=0, metavar="RATIO",
+                        help="the library block's open functions at least this like a library function (no proof "
+                             "byte for byte): report, and with --write set aside")
+    parser.add_argument("--like", action="append", default=[], metavar="PROJECT",
+                        help="with --near: another project whose set_aside ranges hold the same library's block")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
     libs = [x.strip() for x in args.only.split(",") if x.strip()]
@@ -306,6 +395,33 @@ def main(argv=None) -> int:
     out = common.STATE / "libmatch.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"hits": hits, "ambiguous": ambiguous}, indent=1))
+    if args.near:
+        near = near_tail(hits, dirs, libs, args.near, args.like)
+        print(json.dumps({"near": len(near), "bytes": sum(h["size"] for h in near)}))
+        if args.verbose:
+            for h in near:
+                print(f"0x{h['addr']:08X} {h['size']:5d} {h['near']:.2f} (game {h['game_like']:.2f}) "
+                      f"{h['name']} ~ {h['lib']}:{h['member']}:{h['symbol']}")
+        if args.write:
+            aside_path = common.CONFIG / "set_aside.json"
+            aside = json.loads(aside_path.read_text()) if aside_path.is_file() else {}
+            for h in near:
+                src = (f"{h['lib']} ({h['member']}): {h['symbol']}" if h["lib"].upper().endswith((".LIB", ".OBJ")) else
+                       f"{h['symbol']} in {h['lib']}'s runtime block ({h['member']} set_aside range)")
+                aside.setdefault(h["name"], f"MSVC static runtime, another build of it — in the library block after the "
+                                            f"game's code, {h['near']:.0%} like {src}, more than like any of the "
+                                            f"game's own functions ({h['game_like']:.0%})")
+            aside_path.write_text(json.dumps(dict(sorted(aside.items())), indent=1) + "\n")
+            if args.app:
+                done = 0
+                for h in near:
+                    try:
+                        common.api("/api/setaside", {"slug": common.SLUG, "name": h["name"], "why": aside[h["name"]]})
+                        done += 1
+                    except common.OutmatchError as e:
+                        print(json.dumps({"name": h["name"], "error": str(e)[:200]}))
+                print(json.dumps({"set_aside_in_app": done}))
+        return 0
     if args.open_only:
         still = {n for (n,) in common.query("SELECT name FROM functions WHERE project_id=? AND status='open'",
                                             common.project_id())}
